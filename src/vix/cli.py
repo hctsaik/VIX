@@ -1,0 +1,543 @@
+"""VIX command-line interface (v0.1).
+
+    vix ingest <folder> --batch ID [--golden|--anchor]
+    vix infer  --weights model.pt
+    vix embed
+    vix calibrate
+    vix route
+    vix guard  [--ack "reason"]
+    vix export <dst> [--classes a,b] [--copy-images]
+    vix app
+
+Default backend is FiftyOne; use ``--adapter memory`` for a FiftyOne-free dry-run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+from . import pipeline
+from .config import Config
+from .core.threshold import ThresholdPolicy
+from .logging_setup import get_logger, setup_logging
+from .types import Tag
+
+log = get_logger("vix.cli")
+
+_QUICKSTART = """\
+VIX 快速上手(5 分鐘)
+=====================
+核心概念:
+  golden  已確認、可進訓練的資料(事實基準)
+  anchor  從 golden 凍結的一小份,永不訓練,用來偵測定義漂移
+  review  被攔下待人工覆核的樣本    pass  自動通過
+  rejected 經 dismiss 的誤報/有害樣本(排除於覆核佇列)
+
+最短工作流(離線可跑:加 --adapter memory):
+  1. vix ingest ./golden  --batch init --golden      # 匯入黃金集
+     vix ingest ./anchor  --batch init --anchor      # 凍結錨點
+     vix ingest ./incoming --batch w22               # 新批次
+  2. vix infer --weights yolo.pt                      # YOLO 偵測
+  3. vix embed                                        # DINOv2 + kNN 索引
+  4. vix calibrate                                    # per-class 門檻
+  5. vix route                                        # pass/review + 理由
+  6. vix review-queue --top 40                        # 最高風險先看
+  7. vix gate                                         # 能不能訓練? GO/NO-GO
+  8. vix report ./out                                 # 品質分數+導覽報告
+  9. vix export ./train_ready                         # 匯出 YOLOv8 + 逐檔hash
+
+一鍵一條龍:  vix run --input ./incoming --batch w22 --weights yolo.pt --export ./train_ready
+新人看現況:  vix report ./out   (自動對比上一份報告,含品質分數與下一步建議)
+完整指令:    vix --help
+"""
+
+
+def make_adapter(cfg: Config, kind: str):
+    if kind == "auto":
+        try:
+            import fiftyone  # noqa: F401
+        except ImportError:
+            log.warning("FiftyOne not installed; falling back to --adapter memory (pixel embedder).")
+            kind = "memory"
+    if kind == "memory":
+        from .adapters.memory import InMemoryAdapter
+        from .embedding.simple import pixel_embedding
+
+        cfg.embedding_backend = "pixel_fallback"  # mark offline fallback in audit/report
+        return InMemoryAdapter(embedder=pixel_embedding)
+    from .adapters.fiftyone_adapter import FiftyOneAdapter
+
+    return FiftyOneAdapter(cfg)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="vix", description="Vision Integrity eXplainability - data gatekeeper")
+    p.add_argument("--workspace", default=None, help="workspace dir (default ./vix_workspace or $VIX_WORKSPACE)")
+    p.add_argument("--adapter", choices=["auto", "fiftyone", "memory"], default="auto")
+    p.add_argument("--log-level", default="INFO")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("ingest", help="import a folder of images into the dataset")
+    sp.add_argument("folder")
+    sp.add_argument("--batch", required=True)
+    sp.add_argument("--golden", action="store_true", help="tag as golden set")
+    sp.add_argument("--anchor", action="store_true", help="tag as frozen anchor set")
+
+    sub.add_parser("infer", help="run YOLO -> detections").add_argument("--weights", required=True)
+    sub.add_parser("embed", help="DINOv2 embeddings + kNN index")
+    sub.add_parser("calibrate", help="compute per-class percentile thresholds")
+    sub.add_parser("route", help="route candidates to pass/review")
+
+    sg = sub.add_parser("guard", help="frozen-reference drift self-gate")
+    sg.add_argument("--ack", default=None, help="written acknowledgement to proceed past a triggered guard")
+    sg.add_argument("--build", action="store_true", help="(re)build the frozen reference from anchors first")
+
+    se = sub.add_parser("export", help="one-way export golden -> YOLO txt + data.yaml")
+    se.add_argument("dst")
+    se.add_argument("--classes", default=None, help="comma-separated class names (default: from thresholds.json)")
+    se.add_argument("--copy-images", action="store_true")
+
+    sub.add_parser("app", help="launch the FiftyOne review App")
+
+    sa = sub.add_parser("audit-labels", help="find suspected label errors (kNN disagreement)")
+    sa.add_argument("--k", type=int, default=None)
+    sa.add_argument("--top", type=int, default=20)
+
+    sd = sub.add_parser("dedup", help="find near-duplicate image groups")
+    sd.add_argument("--max-distance", type=float, default=0.05)
+
+    scov = sub.add_parser("coverage", help="class distribution + coverage gaps (+need X more)")
+    scov.add_argument("--target", type=int, default=None, help="absolute per-class target count")
+
+    sv = sub.add_parser("value", help="how much new (non-golden) data covers novel regions")
+    sv.add_argument("--radius", type=float, default=0.2)
+
+    sal = sub.add_parser("active-learn", help="rank unlabeled candidates to label next")
+    sal.add_argument("--budget", type=int, default=50)
+
+    sdr = sub.add_parser("drift", help="cross-period class-definition drift")
+    sdr.add_argument("--from", dest="from_tag", required=True)
+    sdr.add_argument("--to", dest="to_tag", required=True)
+
+    ss = sub.add_parser("snapshot", help="create an immutable dataset version snapshot")
+    ss.add_argument("--version", required=True)
+
+    sr = sub.add_parser("restore", help="restore a snapshot's composition + params")
+    sr.add_argument("path")
+    sr.add_argument("--apply", action="store_true", help="replay the composition back into the dataset")
+
+    srep = sub.add_parser("report", help="one-click dataset health report")
+    srep.add_argument("dst")
+    srep.add_argument("--version", default="current")
+
+    srq = sub.add_parser("review-queue", help="unified risk-ranked review queue (+ plain-language why)")
+    srq.add_argument("--top", type=int, default=50)
+
+    sau = sub.add_parser("audit", help="filter the append-only decision log")
+    sau.add_argument("--since")
+    sau.add_argument("--until")
+    sau.add_argument("--event")
+    sau.add_argument("--reviewer")
+
+    sm = sub.add_parser("merge", help="reconcile two datasets' class maps + distribution preview (T2/AA2)")
+    sm.add_argument("--map-a", help="JSON {id: name} (or use --tag-a/--tag-b)")
+    sm.add_argument("--map-b", help="JSON {id: name}")
+    sm.add_argument("--tag-a", help="dataset tag for subset A (one-command conflicts + preview)")
+    sm.add_argument("--tag-b", help="dataset tag for subset B")
+    sm.add_argument("--override", action="append", default=[], help="name=canonical (repeatable)")
+
+    srl = sub.add_parser("relabel", help="rename/merge classes across the dataset, with rollback log")
+    srl.add_argument("--map", action="append", help="old=new (repeatable)")
+    srl.add_argument("--rollback", action="store_true", help="undo the last relabel via change log")
+
+    sru = sub.add_parser("run", help="one-stop pipeline (ingest->infer->embed->route->guard->report->gate->export)")
+    sru.add_argument("--input", default=None, help="folder to ingest first")
+    sru.add_argument("--batch", default="run")
+    sru.add_argument("--weights", default=None)
+    sru.add_argument("--export", dest="export_dst", default=None)
+
+    sh = sub.add_parser("history", help="per-image submission/decision history")
+    sh.add_argument("hash")
+    sub.add_parser("routing-diff", help="what changed between the last two routing runs")
+    sdm = sub.add_parser("dismiss", help="mark samples as false alarms (excluded from review queue)")
+    sdm.add_argument("ids", nargs="+")
+    sub.add_parser("fp-rate", help="false-positive rate of routing vs dismissed")
+    sgeo = sub.add_parser("geometry", help="bbox geometry drift between two tagged periods (W3/W4)")
+    sgeo.add_argument("--from", dest="from_tag", required=True)
+    sgeo.add_argument("--to", dest="to_tag", required=True)
+
+    smp = sub.add_parser("merge-preview", help="preview merged class distribution before committing (W9)")
+    smp.add_argument("--counts-a", help="JSON {class: count}")
+    smp.add_argument("--counts-b", help="JSON {class: count}")
+    smp.add_argument("--tag-a", help="dataset tag for subset A (alternative to --counts-a)")
+    smp.add_argument("--tag-b", help="dataset tag for subset B")
+    smp.add_argument("--override", action="append", default=[], help="name=canonical (repeatable)")
+
+    sub.add_parser("quickstart", help="print the recommended new-user workflow + concept glossary")
+
+    sres = sub.add_parser("resolve", help="apply a human review decision (close review->golden loop)")
+    sres.add_argument("hash")
+    sres.add_argument("--confirm", action="store_true")
+    sres.add_argument("--false-alarm", dest="false_alarm", action="store_true")
+    sres.add_argument("--label", default=None, help="optional corrected class when confirming")
+    sres.add_argument("--reviewer", default="reviewer")
+
+    sub.add_parser("sync-reviews", help="pull App review decisions and write them back (close the loop)")
+
+    # --- reference-list concepts (1-6) ---
+    scal = sub.add_parser("calibrate-confidence", help="temperature scaling on eval JSONL {conf,correct} (#1)")
+    scal.add_argument("eval", help="JSONL with fields: conf (0-1), correct (0/1)")
+    sub.add_parser("label-noise", help="confident-learning class-pair noise + label issues (#2)")
+    sdt = sub.add_parser("drift-type", help="covariate vs concept drift between two tags (#3)")
+    sdt.add_argument("--from", dest="from_tag", required=True)
+    sdt.add_argument("--to", dest="to_tag", required=True)
+    ssp = sub.add_parser("spc", help="SPC EWMA/CUSUM leading indicator on per-batch review-rate (#4)")
+    ssp.add_argument("--method", choices=["ewma", "cusum"], default="ewma")
+    ssp.add_argument("--target", type=float, default=None)
+    ssp.add_argument("--sigma", type=float, default=None)
+    spar = sub.add_parser("parity", help="cross-group performance parity, e.g. by fab (#5)")
+    spar.add_argument("--by", default="fab")
+    scg = sub.add_parser("cost-gate", help="asymmetric miss/false-alarm cost gate (#6)")
+    scg.add_argument("--cr", type=float, required=True)
+    scg.add_argument("--fa", type=float, required=True)
+    scg.add_argument("--miss-cost", type=float, required=True)
+    scg.add_argument("--fa-cost", type=float, default=1.0)
+    scg.add_argument("--budget", type=float, required=True)
+
+    sub.add_parser("verify-fiftyone", help="Tier-2 headless 驗證:FiftyOneAdapter 全鏈 + sync_reviews(需 fiftyone)")
+    svg = sub.add_parser("verify-gui", help="Tier-2 GUI 驗證:Playwright 驅動 App + 執行 operator(需 fiftyone+playwright)")
+    svg.add_argument("--no-execute", action="store_true", help="只截圖,不實際點 Execute")
+
+    snc = sub.add_parser("new-classes", help="open-set: surface suspected new classes (U1)")
+    snc.add_argument("--novelty-radius", type=float, default=0.3)
+    snc.add_argument("--cluster-distance", type=float, default=0.2)
+    sub.add_parser("leakage", help="train/val/test cross-split duplicate leakage (U3)")
+    shf = sub.add_parser("harmful", help="rank the most harmful samples (U5)")
+    shf.add_argument("--top", type=int, default=50)
+    shf.add_argument("--remove", action="store_true", help="dismiss the ranked samples (audited)")
+    shf.add_argument("--note", default="", help="reason recorded in the audit log when removing")
+    sub.add_parser("trend", help="per-class confidence trend across batches + drop alerts (U10)")
+    sra = sub.add_parser("reviewer-audit", help="per-reviewer self-consistency (U2)")
+    sra.add_argument("--class", dest="class_filter", default=None, help="restrict to one class")
+    sub.add_parser("gate", help="pre-training go/no-go gate (U7)")
+    sex = sub.add_parser("explain", help="drill-down why one image was flagged (U9)")
+    sex.add_argument("hash")
+    sve = sub.add_parser("verify", help="verify a received dataset vs its export manifest (U8)")
+    sve.add_argument("manifest")
+    sve.add_argument("data_dir")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    cfg = Config(workspace=args.workspace) if args.workspace else Config()
+    cfg.ensure_dirs()
+    # share one absolute workspace across CLI and any in-process App operators (vix app / verify-gui)
+    os.environ["VIX_WORKSPACE"] = str(cfg.workspace.resolve())
+    # auto-point FiftyOne at the bundled VIX plugins so `vix app` shows the review workstation
+    # (must be set before fiftyone is first imported); user can override.
+    os.environ.setdefault("FIFTYONE_PLUGINS_DIR", str(Path(__file__).resolve().parent / "plugins"))
+    if args.adapter == "memory":
+        cfg.embedding_backend = "pixel_fallback"  # mark offline fallback in audit/report
+    setup_logging(args.log_level, log_file=cfg.log_path)
+    adapter = make_adapter(cfg, args.adapter)
+
+    if args.cmd == "ingest":
+        tags = []
+        if args.golden:
+            tags.append(Tag.GOLDEN)
+        if args.anchor:
+            tags.append(Tag.ANCHOR)
+        n_new, n_skipped = pipeline.ingest(adapter, cfg, args.folder, args.batch, tags=tags)
+        print(f"ingested {n_new} new images, skipped {n_skipped} (already present)")
+
+    elif args.cmd == "infer":
+        from .detect import run_yolo
+
+        n = run_yolo(adapter, cfg, args.weights)
+        print(f"inferred {n} images")
+
+    elif args.cmd == "embed":
+        adapter.compute_embeddings()
+        adapter.build_knn_index()
+        print("embeddings + kNN index built")
+
+    elif args.cmd == "calibrate":
+        pol = pipeline.calibrate(adapter, cfg)
+        print(f"calibrated {len(pol.thresholds)} classes -> {cfg.thresholds_path}")
+
+    elif args.cmd == "route":
+        counts = pipeline.route(adapter, cfg)
+        print(f"routed: {counts['pass']} pass, {counts['review']} review")
+
+    elif args.cmd == "guard":
+        if args.build:
+            pipeline.build_reference(adapter, cfg)
+        report = pipeline.guard(adapter, cfg, ack=args.ack)
+        if report.triggered and not args.ack:
+            print(f"GUARD TRIGGERED {report.reasons} (shift={report.max_shift:.3f}). "
+                  f"Re-run with --ack '<reason>' to proceed.")
+            return 2
+        print(f"guard ok (shift={report.max_shift:.3f}, drop={report.consistency_drop:.3f})")
+
+    elif args.cmd == "export":
+        classes = (
+            args.classes.split(",")
+            if args.classes
+            else sorted(ThresholdPolicy.load(cfg.thresholds_path).thresholds)
+        )
+        res = pipeline.export(adapter, cfg, classes, args.dst, copy_images=args.copy_images)
+        print(f"exported {res['n_images']} images, {res['n_labels']} labels -> {res['data_yaml']}")
+
+    elif args.cmd == "app":
+        adapter.launch_app()
+
+    elif args.cmd == "audit-labels":
+        issues = pipeline.audit_labels(adapter, cfg, k=args.k)
+        for i in issues[: args.top]:
+            print(f"{i.id}: given={i.given_label} -> suggested={i.suggested_label} (disagree={i.disagreement:.2f})")
+        print(f"{len(issues)} suspected label errors")
+
+    elif args.cmd == "dedup":
+        groups = pipeline.dedup(adapter, cfg, args.max_distance)
+        for g in groups:
+            print("dup group:", ", ".join(g))
+        print(f"{len(groups)} near-duplicate groups")
+
+    elif args.cmd == "coverage":
+        cov = pipeline.coverage(adapter, cfg, target=args.target)
+        for c, n in sorted(cov["distribution"].items(), key=lambda kv: -kv[1]):
+            g = cov["gaps"][c]
+            mark = f"  (under-represented, 還需 {g['need']} 張)" if g["under_represented"] else ""
+            print(f"{c}: {n}{mark}")
+
+    elif args.cmd == "value":
+        res = pipeline.coverage_value(adapter, cfg, args.radius)
+        print(f"novel coverage: {res['novel_fraction']:.1%} ({len(res['novel_ids'])} images)")
+
+    elif args.cmd == "active-learn":
+        for r in pipeline.active_learn(adapter, cfg, args.budget):
+            print(f"{r['id']}  score={r['score']}  (uncertainty={r['uncertainty']}, novelty={r['novelty']})")
+
+    elif args.cmd == "drift":
+        result = pipeline.drift_periods(adapter, cfg, args.from_tag, args.to_tag)
+        for c, v in result.items():
+            print(f"{c}: shift={v['shift']:.3f} alert={v['alert']}")
+
+    elif args.cmd == "snapshot":
+        snap, out = pipeline.snapshot(adapter, cfg, args.version)
+        print(f"snapshot {args.version}: {snap['n_golden']} golden, {snap['n_excluded']} excluded -> {out}")
+
+    elif args.cmd == "restore":
+        if args.apply:
+            r = pipeline.restore_apply(adapter, cfg, args.path)
+            print(f"restored version {r['version']}: replayed {r['n_restored']} samples "
+                  f"(content_hash={r['content_hash'][:12]}...)")
+        else:
+            r = pipeline.restore(cfg, args.path)
+            print(f"version {r['version']}: {len(r['composition'])} golden, {len(r['excluded'])} excluded")
+
+    elif args.cmd == "report":
+        _report, paths = pipeline.health_report(adapter, cfg, args.dst, version=args.version)
+        print(f"report -> {paths['md']}")
+
+    elif args.cmd == "review-queue":
+        for r in pipeline.review_queue(adapter, cfg, args.top):
+            print(f"{r['id']}  risk={r['risk']:.3f}  {r['why']}")
+
+    elif args.cmd == "audit":
+        recs = pipeline.audit(cfg, args.since, args.until, args.event, args.reviewer)
+        for r in recs:
+            print(f"{r['ts_utc']}  {r['event']}  {r.get('vix_hash','')}  "
+                  f"{r.get('decision','')}  by={r.get('reviewer_id')}")
+        print(f"{len(recs)} matching records")
+
+    elif args.cmd == "merge":
+        overrides = dict(o.split("=", 1) for o in args.override)
+        if args.tag_a and args.tag_b:
+            res = pipeline.merge_datasets(adapter, cfg, args.tag_a, args.tag_b, overrides)
+        elif args.map_a and args.map_b:
+            map_a = {int(k): v for k, v in json.loads(Path(args.map_a).read_text(encoding="utf-8")).items()}
+            map_b = {int(k): v for k, v in json.loads(Path(args.map_b).read_text(encoding="utf-8")).items()}
+            res = pipeline.merge_maps(map_a, map_b, overrides)
+        else:
+            raise SystemExit("provide either --tag-a/--tag-b or --map-a/--map-b")
+        print("unified:", res["unified_names"])
+        print("needs decision:", res["needs_decision"])
+        print("orphans:", res["orphans"])
+        if "preview_distribution" in res:
+            total = sum(res["preview_distribution"].values()) or 1
+            print("merged distribution preview:")
+            for c, n in sorted(res["preview_distribution"].items(), key=lambda kv: -kv[1]):
+                flag = "  ⚠️ <5%" if n / total < 0.05 else ""
+                print(f"  {c}: {n} ({n / total:.1%}){flag}")
+
+    elif args.cmd == "relabel":
+        if args.rollback:
+            n = pipeline.relabel_rollback(adapter, cfg)
+            print(f"rolled back {n} labels")
+        else:
+            mapping = dict(m.split("=", 1) for m in (args.map or []))
+            diff = pipeline.relabel_dataset(adapter, cfg, mapping)
+            print(f"relabel: {diff['total_changed']} changed | {diff['by_transition']}")
+
+    elif args.cmd == "run":
+        s = pipeline.run_pipeline(adapter, cfg, input_folder=args.input, batch_id=args.batch,
+                                  weights=args.weights, export_dst=args.export_dst)
+        print(f"run: gate={s['gate']} quality={s['quality_score']}/100 "
+              f"(route={s['route']['pass']}p/{s['route']['review']}r, "
+              f"{s['n_duplicate_groups']} dup groups, {s['n_label_errors']} label errors)")
+        return 0 if s["gate"] == "GO" else 2
+
+    elif args.cmd == "history":
+        for r in pipeline.history(cfg, args.hash):
+            print(f"{r['ts_utc']}  {r['event']}  {r.get('decision','')}  batch={r.get('batch_id','')}")
+
+    elif args.cmd == "routing-diff":
+        d = pipeline.routing_diff(cfg)
+        for c in d["changed"]:
+            print(f"{c['id']}: {c['from']} -> {c['to']}")
+        print(d.get("note") or f"{d['n_changed']} decisions changed")
+
+    elif args.cmd == "dismiss":
+        n = pipeline.dismiss(adapter, cfg, args.ids)
+        print(f"dismissed {n} false alarms")
+
+    elif args.cmd == "fp-rate":
+        r = pipeline.false_positive_rate(cfg)
+        print(f"reviewed={r['reviewed']} dismissed={r['dismissed_false_alarms']} fp_rate={r['fp_rate']:.1%}")
+
+    elif args.cmd == "geometry":
+        res = pipeline.geometry_check(adapter, cfg, args.from_tag, args.to_tag)
+        print(f"geometry drift alert={res['alert']} shifts={res.get('shifts')}")
+
+    elif args.cmd == "merge-preview":
+        overrides = dict(o.split("=", 1) for o in args.override)
+        if args.tag_a and args.tag_b:
+            merged = pipeline.merge_preview_tags(adapter, cfg, args.tag_a, args.tag_b, overrides)
+        elif args.counts_a and args.counts_b:
+            counts_a = json.loads(Path(args.counts_a).read_text(encoding="utf-8"))
+            counts_b = json.loads(Path(args.counts_b).read_text(encoding="utf-8"))
+            merged = pipeline.merge_preview(counts_a, counts_b, overrides)
+        else:
+            raise SystemExit("provide either --tag-a/--tag-b or --counts-a/--counts-b")
+        total = sum(merged.values()) or 1
+        for c, n in sorted(merged.items(), key=lambda kv: -kv[1]):
+            flag = "  ⚠️ <5%" if n / total < 0.05 else ""
+            print(f"{c}: {n} ({n / total:.1%}){flag}")
+
+    elif args.cmd == "quickstart":
+        print(_QUICKSTART)
+
+    elif args.cmd == "resolve":
+        decision = "false_alarm" if args.false_alarm else "confirm"
+        outcome = pipeline.resolve_review(adapter, cfg, args.hash, decision, args.label, args.reviewer)
+        print(f"resolved {args.hash}: {outcome}")
+
+    elif args.cmd == "sync-reviews":
+        n = pipeline.sync_reviews(adapter, cfg)
+        print(f"synced {n} review decisions from the App")
+
+    elif args.cmd == "calibrate-confidence":
+        rows = [json.loads(line) for line in Path(args.eval).read_text(encoding="utf-8").splitlines() if line.strip()]
+        res = pipeline.calibrate_confidence([r["conf"] for r in rows], [r["correct"] for r in rows], cfg)
+        print(f"temperature={res['temperature']}  ECE {res['ece_before']} -> {res['ece_after']}")
+
+    elif args.cmd == "label-noise":
+        r = pipeline.label_noise(adapter, cfg)
+        for k, v in sorted(r["noise_rates"].items(), key=lambda kv: -kv[1]):
+            print(f"  noise {k}: {v:.1%}")
+        for iss in r["issues"][:20]:
+            print(f"  {iss.id}: given={iss.given_label} -> pred={iss.pred_label} (conf={iss.confidence:.2f})")
+        print(f"{len(r['issues'])} label issues")
+
+    elif args.cmd == "drift-type":
+        r = pipeline.drift_type(adapter, cfg, args.from_tag, args.to_tag)
+        print(f"{r['verdict']}: cov={r['covariate_shift']} pred={r['prediction_shift']} | {r['recommended_action']}")
+
+    elif args.cmd == "spc":
+        series = pipeline.review_rate_series(adapter, cfg)
+        r = pipeline.spc_monitor(series, args.target, args.sigma, method=args.method)
+        print(f"series={[round(x, 3) for x in series]}")
+        print(f"alarm={r['alarm']} at index {r['alarm_index']}")
+
+    elif args.cmd == "parity":
+        r = pipeline.parity(adapter, cfg, by=args.by)
+        for g, info in r["groups"].items():
+            mark = "  ⚠️ 偏低" if info["worse"] else ""
+            print(f"  {args.by}:{g} = {info['value']:.3f} (rel {info['rel_to_median']:+.1%}){mark}")
+        print(f"median={r['median']:.3f} flagged={r['flagged']}")
+
+    elif args.cmd == "cost-gate":
+        r = pipeline.cost_gate_eval(cfg, args.cr, args.fa, args.miss_cost, args.fa_cost, args.budget)
+        print(f"{r['verdict']}: expected_cost={r['expected_cost_per_unit']} "
+              f"(miss {r['miss_component']} + fa {r['fa_component']}), budget={args.budget}")
+        return 0 if r["verdict"] == "GO" else 2
+
+    elif args.cmd == "verify-fiftyone":
+        from .verification import run_headless
+
+        return run_headless(cfg)
+
+    elif args.cmd == "verify-gui":
+        from .verification import run_gui
+
+        return run_gui(cfg, execute=not args.no_execute)
+
+    elif args.cmd == "new-classes":
+        clusters = pipeline.new_classes(adapter, cfg, args.novelty_radius, args.cluster_distance)
+        for c in clusters:
+            print(f"{c['cluster']} ({c.get('size', len(c['ids']))} 張): {c['ids']}\n  {c['suggestion']}")
+        print(f"{len(clusters)} suspected new-class clusters")
+
+    elif args.cmd == "leakage":
+        leaks = pipeline.leakage(adapter, cfg)
+        for lk in leaks:
+            print(f"leak across {lk['splits']}: {lk['ids']}")
+        print(f"{len(leaks)} cross-split leakage groups")
+
+    elif args.cmd == "harmful":
+        if args.remove:
+            ids = pipeline.harmful_remove(adapter, cfg, top=args.top, note=args.note)
+            print(f"removed {len(ids)} harmful samples (audited)")
+        else:
+            for r in pipeline.harmful(adapter, cfg, args.top):
+                print(f"{r['id']}  harm={r['harm']:.3f}  {r['reasons']}")
+
+    elif args.cmd == "trend":
+        res = pipeline.quality_trend(adapter, cfg)
+        for a in res["alerts"]:
+            print(f"DROP {a['class']} @ {a['batch']} (-{a['drop']})")
+        print(f"{len(res['alerts'])} drop alerts")
+
+    elif args.cmd == "reviewer-audit":
+        for rev, info in pipeline.reviewer_audit(adapter, cfg, class_filter=args.class_filter).items():
+            print(f"{rev}: consistency={info['intra_consistency']:.2f}, conflicts={len(info['conflicts'])}")
+
+    elif args.cmd == "gate":
+        r = pipeline.pre_train_gate_stage(adapter, cfg)
+        from .core.decision_log import DecisionLog
+
+        verified = DecisionLog(cfg.decision_log_path).verify_chain()
+        print(f"{r.verdict}: {r.reasons or 'all checks passed'}")
+        print(f"audit hash-chain verified: {verified}")
+        return 0 if r.verdict == "GO" else 2
+
+    elif args.cmd == "explain":
+        print(json.dumps(pipeline.explain_one(adapter, cfg, args.hash), ensure_ascii=False, indent=2))
+
+    elif args.cmd == "verify":
+        res = pipeline.verify_dataset(cfg, args.manifest, args.data_dir)
+        print(f"ok={res['ok']} checked={res['n_checked']} "
+              f"mismatched={res['mismatched']} missing={res['missing']}")
+        return 0 if res["ok"] else 2
+
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

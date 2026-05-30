@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VIX 開發紀實 — 如何與 AI 協作打造系統</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2a3340;
+    --ink:#e6edf3; --muted:#9aa7b4; --soft:#7d8a98;
+    --a:#58a6ff; --a2:#79c0ff; --green:#3fb950; --amber:#d29922; --pink:#db61a2; --purple:#a371f7;
+    --shadow:0 8px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:linear-gradient(180deg,#0a0e14,#0d1117 30%);color:var(--ink);
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei","PingFang TC",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.75;font-size:16px}
+  a{color:var(--a2);text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:960px;margin:0 auto;padding:0 22px}
+
+  header.hero{padding:64px 0 44px;border-bottom:1px solid var(--line);
+    background:radial-gradient(1200px 400px at 50% -50%,rgba(88,166,255,.14),transparent)}
+  .kicker{letter-spacing:.22em;font-size:12px;color:var(--a);text-transform:uppercase;font-weight:700}
+  h1{font-size:40px;line-height:1.2;margin:14px 0 10px;font-weight:800;letter-spacing:-.01em}
+  .sub{color:var(--muted);font-size:18px;max-width:680px}
+  .meta{margin-top:22px;display:flex;flex-wrap:wrap;gap:10px}
+  .chip{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 13px;font-size:13px;color:var(--muted)}
+  .chip b{color:var(--ink);font-weight:600}
+
+  nav.toc{position:sticky;top:0;z-index:10;background:rgba(13,17,23,.82);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);margin-bottom:8px}
+  nav.toc .wrap{display:flex;gap:8px;flex-wrap:wrap;padding-top:10px;padding-bottom:10px;font-size:13px}
+  nav.toc a{color:var(--muted);padding:4px 10px;border-radius:8px;border:1px solid transparent}
+  nav.toc a:hover{color:var(--ink);border-color:var(--line);text-decoration:none;background:var(--panel)}
+
+  section{padding:44px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:27px;margin:0 0 6px;font-weight:800;letter-spacing:-.01em}
+  h2 .n{color:var(--a);font-variant-numeric:tabular-nums;margin-right:10px;font-weight:800}
+  .lead{color:var(--muted);margin:0 0 22px;font-size:16px}
+  h3{font-size:18px;margin:26px 0 8px;color:var(--a2)}
+  p{margin:12px 0}
+  .muted{color:var(--muted)}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;box-shadow:var(--shadow)}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:760px){.g2,.g4{grid-template-columns:1fr}}
+
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.ba{grid-template-columns:1fr}}
+  .ba .box{border-radius:14px;padding:18px 20px;border:1px solid var(--line)}
+  .ba .before{background:rgba(210,153,34,.07);border-color:rgba(210,153,34,.3)}
+  .ba .after{background:rgba(63,185,80,.07);border-color:rgba(63,185,80,.3)}
+  .ba h4{margin:0 0 8px;font-size:14px;letter-spacing:.08em;text-transform:uppercase}
+  .ba .before h4{color:var(--amber)} .ba .after h4{color:var(--green)}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--a2);font-weight:600}
+  tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+
+  /* roles */
+  .roles{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  @media(max-width:760px){.roles{grid-template-columns:1fr 1fr}}
+  @media(max-width:460px){.roles{grid-template-columns:1fr}}
+  .role{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;position:relative;overflow:hidden}
+  .role::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--c)}
+  .role .tag{font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--c)}
+  .role h4{margin:6px 0 6px;font-size:16px}
+  .role p{margin:0;font-size:13.5px;color:var(--muted)}
+  .rA{--c:var(--a)} .rB{--c:var(--purple)} .rC{--c:var(--green)} .rD{--c:var(--pink)}
+
+  /* timeline */
+  .tl{position:relative;margin:8px 0 0;padding-left:30px}
+  .tl::before{content:"";position:absolute;left:9px;top:6px;bottom:6px;width:2px;background:var(--line)}
+  .step{position:relative;margin:0 0 22px}
+  .step::before{content:"";position:absolute;left:-26px;top:4px;width:14px;height:14px;border-radius:50%;
+    background:var(--a);box-shadow:0 0 0 4px rgba(88,166,255,.18)}
+  .step.s2::before{background:var(--amber);box-shadow:0 0 0 4px rgba(210,153,34,.18)}
+  .step.s3::before{background:var(--green);box-shadow:0 0 0 4px rgba(63,185,80,.18)}
+  .step h4{margin:0 0 4px;font-size:17px}
+  .step .when{font-size:12px;color:var(--soft);letter-spacing:.05em}
+
+  .phase{border-left:4px solid var(--c);background:var(--panel);border-radius:0 12px 12px 0;padding:14px 18px;margin:12px 0}
+  .p1{--c:var(--a)} .p2{--c:var(--amber)} .p3{--c:var(--green)}
+  .phase h4{margin:0 0 6px;font-size:16px} .phase h4 small{color:var(--soft);font-weight:500;font-size:12px;margin-left:8px}
+  .phase ul{margin:6px 0 0;padding-left:18px} .phase li{margin:3px 0;font-size:14px;color:var(--muted)}
+
+  .take{display:grid;grid-template-columns:42px 1fr;gap:14px;align-items:start;padding:14px 0;border-bottom:1px dashed var(--line)}
+  .take:last-child{border-bottom:none}
+  .take .num{font-size:22px;font-weight:800;color:var(--a);font-variant-numeric:tabular-nums;text-align:center}
+  .take h4{margin:0 0 3px;font-size:16px}
+  .take p{margin:0;color:var(--muted);font-size:14.5px}
+
+  blockquote{margin:16px 0;padding:12px 18px;border-left:3px solid var(--a);background:var(--panel2);border-radius:0 10px 10px 0;color:var(--ink)}
+  code{background:#0b1622;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:13px;color:var(--a2);
+    font-family:"SF Mono",Consolas,"Cascadia Code",monospace}
+  .pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;font-weight:600}
+  .y{background:rgba(63,185,80,.14);color:var(--green);border:1px solid rgba(63,185,80,.3)}
+
+  footer{padding:40px 0 70px;color:var(--soft);font-size:13.5px}
+  footer .files{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}
+  footer a.file{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 13px;color:var(--a2)}
+  .note{font-size:12.5px;color:var(--soft);margin-top:18px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="kicker">Human + AI · System Design Case Study</div>
+    <h1>VIX 開發紀實:<br>如何與 AI 協作打造一套系統</h1>
+    <p class="sub">一個真實案例 —— 從「我訓練 YOLO/DINO 卻不知道資料加了有沒有用」的模糊困惑,到一份四方達成共識的可落地架構。記錄人與 AI 一起把問題想清楚、再想對的全過程。</p>
+    <div class="meta">
+      <span class="chip">主題:<b>Data-Centric AI 資料守門員</b></span>
+      <span class="chip">方法:<b>問題重構 → 多代理人辯論 → 分期共識</b></span>
+      <span class="chip">底層:<b>FiftyOne (Voxel51)</b></span>
+      <span class="chip">日期:<b>2026-05-30</b></span>
+    </div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap">
+    <a href="#s1">① 緣起</a>
+    <a href="#s2">② 重構問題</a>
+    <a href="#s3">③ 協作模式</a>
+    <a href="#s4">④ 多代理人歷程</a>
+    <a href="#s5">⑤ 共識成果</a>
+    <a href="#s5b">⑥ 追問與事實查核</a>
+    <a href="#s6">⑦ 給同事的方法論</a>
+  </div>
+</nav>
+
+<section id="s1">
+  <div class="wrap">
+    <h2><span class="n">01</span>緣起:一個說不清楚的困惑</h2>
+    <p class="lead">使用者並沒有帶著明確規格來。他帶來的是一種「訓練現場的焦慮」。</p>
+    <blockquote>「我在訓練 DINO、YOLO 的時候,其實在可解釋性、以及我增加了什麼資料進去會讓模型變得更好、或是讓定義變不一致,我並不知道,這也很困擾我。」</blockquote>
+    <p>他同時附上了一份初步的系統草案(VIX),設計是:批次掃描本機資料夾、用 YOLO 信心度 + DINOv2 特徵距離篩出可疑影像、用 Streamlit 儀表板人工覆核、確認後把<b>實體檔案搬移</b>到不同資料夾(pass / review / golden)。</p>
+    <div class="card">
+      <h3 style="margin-top:0">這一步的關鍵動作</h3>
+      <p class="muted" style="margin-bottom:0">沒有立刻照著草案寫程式。AI 先做的是:<b>判斷使用者「真正的問題」和「他以為的問題」之間有沒有落差</b>。這個落差,往往才是專案成敗的分水嶺。</p>
+    </div>
+  </div>
+</section>
+
+<section id="s2">
+  <div class="wrap">
+    <h2><span class="n">02</span>第一個轉折:AI 先幫你把問題重構</h2>
+    <p class="lead">使用者把它叫「可解釋性 (eXplainability)」。但真正的痛,根本不是傳統 XAI。</p>
+    <div class="ba">
+      <div class="box before">
+        <h4>使用者原本的框架</h4>
+        <p>「我需要<b>可解釋性</b>。」<br>(腦中想的是 Grad-CAM、attention map ——「為什麼模型把這張預測成 bubble?」)</p>
+      </div>
+      <div class="box after">
+        <h4>AI 重構後的框架</h4>
+        <p>真正的痛是兩個<b>資料層面</b>的問題,屬於 <b>Data-Centric AI</b>,跟模型可解釋性無關。</p>
+      </div>
+    </div>
+    <table>
+      <tr><th>真正的痛點</th><th>它的本質</th><th>對應的 SOTA 手段</th></tr>
+      <tr><td>加了哪批資料讓模型變好/變壞?</td><td>資料歸因 (Data Attribution)</td><td>凍結測試集 + 版控 + ablation(地基)→ Dataset Cartography → TRAK(進階)</td></tr>
+      <tr><td>加的資料讓 bubble/reflection 定義漂掉?</td><td>標註品質 + 概念漂移</td><td>cleanlab/label-error + 凍結參照漂移監控 + 多人一致性 κ</td></tr>
+    </table>
+    <p>AI 同時點出草案裡幾個會踩雷的技術決定,並給了修正方向:</p>
+    <table>
+      <tr><th>原草案</th><th>問題</th><th>修正</th></tr>
+      <tr><td>UMAP 2D 距離拿來做篩選判定</td><td>UMAP 會扭曲全域距離</td><td>UMAP 只用於「看」,判定在原始 embedding 空間做</td></tr>
+      <tr><td>centroid + cosine 距離</td><td>假設類別是球形、單峰</td><td>改 kNN(或 Mahalanobis)</td></tr>
+      <tr><td>固定 0.85 信心門檻</td><td>未校準、拍腦袋</td><td>per-class 校準門檻 → Conformal Prediction</td></tr>
+      <tr><td>用實體資料夾搬移表達狀態</td><td>競態、難稽核(在 FiftyOne 中是反模式)</td><td>用資料庫 tags/fields + view</td></tr>
+      <tr><td>假設 golden set 是乾淨的</td><td>它幾乎從不乾淨</td><td>定期用 cleanlab 自審 golden set</td></tr>
+    </table>
+    <p class="muted">→ 還提醒:閉環「review → golden → 重訓 → 再篩」會<b>放大模型自身偏差</b>(定義被模型而非真實世界主導),需要凍結參照點來防。</p>
+  </div>
+</section>
+
+<section id="s3">
+  <div class="wrap">
+    <h2><span class="n">03</span>協作模式:為什麼用「多代理人辯論」</h2>
+    <p class="lead">使用者下了一個關鍵指令:用 multi-agent 不斷思考與討論,直到達成共識,並全程記錄。</p>
+    <div class="grid g2">
+      <div class="card">
+        <h3 style="margin-top:0">為什麼是多代理人?</h3>
+        <p class="muted" style="margin-bottom:0">單一視角會有盲點:演算法專家容易過度工程,產品經理容易砍掉必要的嚴謹。讓<b>不同立場的 AI 角色彼此對立、互相挑戰</b>,能逼出「沒有人能單獨想到」的折衷。這是刻意製造「建設性衝突」。</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">為什麼基於 FiftyOne?</h3>
+        <p class="muted" style="margin-bottom:0">使用者點名 <a href="https://github.com/voxel51/fiftyone">voxel51/fiftyone</a>。它已經做掉 80% 的輪子:embedding 視覺化、相似度/離群、label-error、標註整合。<b>站在成熟工具上,而不是重造它</b>。AI 全程上官網查證 API,而非憑記憶臆測。</p>
+      </div>
+    </div>
+    <div class="roles" style="margin-top:18px">
+      <div class="role rA"><div class="tag">角色 A</div><h4>演算法</h4><p>embedding、距離度量、label-error、cartography、門檻、漂移、資料歸因</p></div>
+      <div class="role rB"><div class="tag">角色 B</div><h4>系統架構</h4><p>build-vs-reuse 邊界、資料模型、UI、部署拓樸</p></div>
+      <div class="role rC"><div class="tag">角色 C</div><h4>MLOps / 治理</h4><p>凍結評估集、版控、閉環安全、漂移治理、可重現 ablation</p></div>
+      <div class="role rD"><div class="tag">角色 D</div><h4>產品 / MVP</h4><p>分期、最小可用範圍、刪減清單、效益與採用</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="s4">
+  <div class="wrap">
+    <h2><span class="n">04</span>多代理人歷程:發散 → 收斂 → 共識</h2>
+    <p class="lead">兩輪、八次代理人發言,全程寫成 Markdown,可追溯、可交接。</p>
+    <div class="tl">
+      <div class="step s1">
+        <div class="when">ROUND 1 · 發散 (Divergent)</div>
+        <h4>四個角色在不知道彼此結論下,各自獨立提案</h4>
+        <p class="muted">攤開所有觀點 —— 也攤開所有分歧。共識點很快浮現(基於 FiftyOne、UMAP 只供顯示、OSS 無原生版控需用 DVC),但也出現 7 個明確衝突,核心是一條張力:</p>
+        <blockquote style="margin:10px 0">產品 D:「其他角色合計超過 3 個月工程量,但使用者今天的痛點可以用 2 週解決 80%。過度工程的最大風險不是技術債,是這個工具根本沒人用完就被放棄。」</blockquote>
+      </div>
+      <div class="step s2">
+        <div class="when">ROUND 2 · 收斂 (Convergent)</div>
+        <h4>用「分期」當作調和總框架,逐條對撞 7 個衝突</h4>
+        <p class="muted">關鍵頓悟:大多數衝突不是「誰對誰錯」,而是「<b>該放在哪一期</b>」。把產品 D 的分期框架當骨架,把演算法/架構/治理的高級項目分配到正確階段,衝突就化解了。</p>
+        <table style="margin-top:10px">
+          <tr><th>衝突</th><th>化解方式</th></tr>
+          <tr><td>廢除實體資料夾 vs 不破壞既有腳本</td><td>FiftyOne 當唯一事實來源 + <b>單向 export 轉接器</b>把結果匯回既有資料夾(零改動)</td></tr>
+          <tr><td>kNN vs cosine 距離</td><td>偽衝突 —— <code>compute_similarity</code> 的 kNN 不比 centroid 貴,直接採 kNN</td></tr>
+          <tr><td>嚴謹治理 vs 單人作業官僚化</td><td>guardrail <b>依團隊規模分期</b>:單人只留 3 項便宜防護,雙簽延到多人時</td></tr>
+        </table>
+      </div>
+      <div class="step s3">
+        <div class="when">CONSENSUS · 達成</div>
+        <h4>四角色全部「有條件是」,9 條件彼此相容</h4>
+        <p class="muted">主持人裁決了唯一的張力(reference model 在 v0.1 = frozen pretrained DINOv2,不另訓練;完整版任務模型延 v0.2),讓所有條件同時成立。共識鎖定。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="s5">
+  <div class="wrap">
+    <h2><span class="n">05</span>共識成果:一份可開工的分期架構</h2>
+    <p class="lead">核心結論 —— VIX 是建立在 FiftyOne 上的 <b>Data-Centric AI 資料守門員</b>,用分期控制複雜度,用凍結參照點防止閉環放大模型偏差。</p>
+    <div class="phase p1">
+      <h4>v0.1 —「可見性」<small>~2–3 週 · 單人本機 · 無 API</small></h4>
+      <ul>
+        <li>既有資料夾 → 單一 FiftyOne Dataset(tags/fields 為狀態,<b>不搬檔</b>)</li>
+        <li>DINOv2 embedding + <code>compute_similarity</code> kNN 離群分數 + YOLO 信心 → tag</li>
+        <li>FiftyOne App 原生 UI 覆核(Lasso 選點 + tagging,不自建 plugin)</li>
+        <li>三項便宜防護:凍結 golden test set + frozen anchor + frozen DINOv2 reference 打分(超閾值→單人自我 gate + 書面自審)</li>
+        <li>單向 export 轉接器:golden → 資料夾 + YOLO txt + data.yaml(既有訓練腳本零改動)</li>
+      </ul>
+    </div>
+    <div class="phase p2">
+      <h4>v0.2 —「可追溯」<small>~+4–6 週</small></h4>
+      <ul>
+        <li>DVC + W&B + 完整 ablation 協定(系統化回答「這批資料有沒有用」)</li>
+        <li>門檻升級 per-class calibrated(temperature scaling)· cleanlab 橋接 · 漂移 KS test</li>
+        <li>FastAPI 觸發層接 CI/訓練 pipeline</li>
+      </ul>
+    </div>
+    <div class="phase p3">
+      <h4>v1.0 —「可制度化」<small>~+8 週</small></h4>
+      <ul>
+        <li>自建 FiftyOne Operator/Panel(覆核按鈕、逐張卡)· Dataset Cartography · Conformal Prediction</li>
+        <li>多標註者雙簽 + 每季 re-audit + Cohen's κ 定義評審 · Mahalanobis 補強</li>
+      </ul>
+    </div>
+    <p class="muted" style="margin-top:18px">完整規格、Build-vs-Reuse 對照、資料模型 schema、9 條 binding 條件、v0.1 交付清單,見 <a href="discussion/consensus.md">discussion/consensus.md</a>。</p>
+  </div>
+</section>
+
+<section id="s5b">
+  <div class="wrap">
+    <h2><span class="n">06</span>一個追問:當你挑戰 AI 的根基假設</h2>
+    <p class="lead">共識鎖定後,使用者沒有照單全收,而是反問:「我需要直接用 FiftyOne,還是能自己開發類似功能?優缺點是什麼?」—— 這一問直接質疑了整份共識的地基。</p>
+    <p>好的協作姿勢,是把這種追問視為健康訊號。AI 沒有辯護先前的結論,而是再開一場三方辯論(<b>正方直接用 / 反方自建 / 裁判決策框架</b>),並全程上官網查證授權與部署能力。</p>
+
+    <div class="card" style="border-color:rgba(219,97,162,.4);background:rgba(219,97,162,.06)">
+      <h3 style="margin-top:0;color:var(--pink)">⚠ 關鍵時刻:三個 AI 代理人「說法打架」</h3>
+      <p style="margin-bottom:8px">關於 <code>fiftyone-brain</code> 套件的授權,代理人給出<b>互相矛盾</b>的答案:</p>
+      <table style="margin:6px 0">
+        <tr><th>代理人</th><th>說法</th></tr>
+        <tr><td>正方 / 反方</td><td>Apache 2.0(開源、商用自由)</td></tr>
+        <tr><td>裁判</td><td>閉源 freeware,禁反編譯/轉賣</td></tr>
+      </table>
+      <p style="margin-bottom:0">授權是「能不能商用、要不要綁定」的決勝因素。AI 沒有挑一個聽起來合理的版本寫進文件,而是<b>親自抓 PyPI metadata 與 GitHub LICENSE 原文驗證</b> —— 裁定:<span class="pill y">兩者目前皆為 Apache 2.0</span>。裁判錯了(那是 brain 套件<b>早期版本</b>的舊狀況,後來已重新授權)。</p>
+    </div>
+
+    <h3>辯論的真正共識:爭的不是「用不用」,而是「業務邏輯該不該綁進去」</h3>
+    <div class="ba">
+      <div class="box after" style="border-color:var(--line);background:var(--panel)">
+        <h4 style="color:var(--a2)">直接委託給 FiftyOne</h4>
+        <p class="muted">embedding 計算、相似度/kNN、App 互動式視覺化 + Lasso、標註整合 —— 這些自建要 3–6 個月,且真正難的部分不值得重造。</p>
+      </div>
+      <div class="box after" style="border-color:var(--line);background:var(--panel)">
+        <h4 style="color:var(--green)">必須是 VIX 自己的(可獨立存活)</h4>
+        <p class="muted">離群分數定義、門檻策略、凍結參照、決策紀錄、匯出邏輯 —— 寫成獨立 module,只透過一層薄 <code>FiftyOneAdapter</code> 接觸 FiftyOne。</p>
+      </div>
+    </div>
+    <blockquote>結論:<b>直接用 FiftyOne,但當「函式庫」用,並用一層薄 adapter 把領域邏輯解耦。</b>既不浪費時間重造輪子,也不把自己鎖死 —— 日後要抽換 FiftyOne,只改一個檔案。何時才該改自建?資料不得外流且需 air-gap、UI 必須深嵌既有 MES、或需求極簡到用不上它 9 成功能時。詳見 <a href="discussion/round-03-use-vs-build.md">round-03-use-vs-build.md</a>。</blockquote>
+
+    <h3>再追問:保密、不能外流、又沒預算 —— 還能用嗎?</h3>
+    <p>使用者再丟出三個真實世界的硬約束。AI 又查了一輪官方文件,結論可能跟直覺相反:</p>
+    <div class="card" style="border-color:rgba(63,185,80,.35);background:rgba(63,185,80,.06)">
+      <p style="margin-top:0"><b style="color:var(--green)">「資料不能外流」並不等於「必須自建」。</b>FiftyOne OSS 100% 在本機/離線跑(Python + 本機 MongoDB + localhost App),預設組態下影像與標註<b>沒有離開機器的路徑</b>。</p>
+      <table style="margin:8px 0">
+        <tr><th>使用者的疑問</th><th>查證後的答案</th></tr>
+        <tr><td>有完整原始碼嗎?</td><td>有。core 與 brain 皆 Apache 2.0,且 GitHub repo 含<b>完整可稽核實作</b>(非空殼,親查 similarity.py 62KB 等)→ 可讀、可改、可 fork</td></tr>
+        <tr><td>有費用嗎?</td><td><b>$0</b>。Apache 2.0 對已發佈版本不可撤回 → 永久可用,絕不會被鎖死</td></tr>
+        <tr><td>後顧之憂?</td><td>三個watch-item:① MongoDB 是 SSPL(內部用無妨,別當 SaaS 對外賣);② 無 RBAC/不可竄改審計(用 DecisionLog append-only + OS 層權限補);③ 法規若強制 SSO/法庭級審計才需另投資</td></tr>
+      </table>
+      <p style="margin-bottom:0">這三個約束<b>沒有推翻</b>「直接用 FiftyOne」的結論,反而<b>強化</b>了 adapter 解耦 —— 合規邏輯留在 VIX 自己手裡,FiftyOne 只當地端的視覺化引擎。詳見 <a href="discussion/round-04-airgap-licensing.md">round-04-airgap-licensing.md</a>。</p>
+    </div>
+  </div>
+</section>
+
+<section id="s6">
+  <div class="wrap">
+    <h2><span class="n">07</span>給同事的方法論:如何與 AI 協作開發系統</h2>
+    <p class="lead">這份案例真正想傳達的,不是 VIX 本身,而是這套<b>協作姿勢</b>。把它當成可複製的 SOP。</p>
+
+    <div class="take"><div class="num">1</div><div>
+      <h4>先讓 AI 重構問題,別急著要程式碼</h4>
+      <p>使用者開口要「可解釋性」,AI 卻先指出真正的問題是「資料歸因 + 概念漂移」。<b>「我以為的需求」和「真正的問題」之間的落差,才是專案最該先處理的。</b></p>
+    </div></div>
+    <div class="take"><div class="num">2</div><div>
+      <h4>用持續性目標讓 AI 不中途停下</h4>
+      <p>使用者用 <code>/goal</code> 設下「討論到共識為止」的條件,AI 就會自主跑完發散→收斂→共識的多輪迭代,而不是丟一個答案就停。<b>把「期望的結束狀態」說清楚,比逐步下指令有效。</b></p>
+    </div></div>
+    <div class="take"><div class="num">3</div><div>
+      <h4>刻意製造「建設性的對立」</h4>
+      <p>讓 AI 扮演立場相反的角色互相挑戰(嚴謹派 vs 務實派),逼出單一視角看不到的折衷。<b>AI 最大的價值之一,是能同時、公正地扮演多個利害關係人。</b></p>
+    </div></div>
+    <div class="take"><div class="num">4</div><div>
+      <h4>站在成熟工具上,並要求 AI 查證而非臆測</h4>
+      <p>基於 FiftyOne 而非從零造輪子;且要求 AI 上官方文件查證 API 能力(例:確認 OSS 沒有原生版本控制)。<b>「先查證再下結論」是把 AI 從『聽起來合理』推向『真的可行』的關鍵紀律。</b></p>
+    </div></div>
+    <div class="take"><div class="num">5</div><div>
+      <h4>用「分期」調和理想與現實</h4>
+      <p>多數架構爭論不是對錯,而是「該放哪一期」。分期讓「理想架構」與「2 週能交付」同時成立,直接化解過度工程的爭執。<b>問「這要放 v0.1 還是 v1.0?」,而不是「要不要做?」</b></p>
+    </div></div>
+    <div class="take"><div class="num">6</div><div>
+      <h4>每一步都留下可追溯的文件</h4>
+      <p>每輪的方向、重點、決策、共識、待澄清都寫成 Markdown。<b>過程本身就是交接物</b>——新成員讀 round-01 → round-02 → consensus,就能完整重建「為什麼這樣決定」。</p>
+    </div></div>
+    <div class="take"><div class="num">7</div><div>
+      <h4>人保留最終決策權,AI 提假設、列開放問題</h4>
+      <p>遇到不確定(GPU?團隊人數?資料格式?),AI 採取明確的「工作假設」往前走,同時把問題列出來讓人覆寫,而不是卡住等答案。<b>AI 負責推進與選項,人負責拍板。</b></p>
+    </div></div>
+    <div class="take"><div class="num">8</div><div>
+      <h4>讓 AI 查核「AI 自己的說法」,以一手來源為準</h4>
+      <p>三個代理人對授權條款各執一詞時,正確動作不是投票多數決,而是回到 PyPI 與 GitHub LICENSE 原文驗證。<b>AI 會自信地說錯話;把關鍵事實釘回一手來源,是讓「聽起來合理」變成「真的正確」的最後一道防線。</b></p>
+    </div></div>
+
+    <blockquote style="margin-top:26px">與 AI 協作開發系統,不是「叫它寫程式」。而是把它當成一個能<b>重構問題、扮演多方、查證事實、推進決策、並完整留痕</b>的協作夥伴 —— 人始終握著方向盤。</blockquote>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>本頁為人機協作開發的紀實案例,可離線開啟、可直接簡報。底層討論文件:</div>
+    <div class="files">
+      <a class="file" href="discussion/README.md">討論索引 README</a>
+      <a class="file" href="discussion/round-01.md">Round 1 · 發散</a>
+      <a class="file" href="discussion/round-02.md">Round 2 · 收斂</a>
+      <a class="file" href="discussion/round-03-use-vs-build.md">Round 3 · 用 vs 自建</a>
+      <a class="file" href="discussion/round-04-airgap-licensing.md">Round 4 · 約束鎖定</a>
+      <a class="file" href="discussion/consensus.md">Consensus · 共識</a>
+    </div>
+    <div class="note">VIX (Vision Integrity eXplainability) · Data-Centric AI 資料守門員 · 基於 FiftyOne (Voxel51) · 由人與 AI 多代理人協作產出 · 2026-05-30</div>
+  </div>
+</footer>
+
+</body>
+</html>

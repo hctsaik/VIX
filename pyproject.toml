@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vix"
+version = "0.1.0"
+description = "Vision Integrity eXplainability — Data-Centric AI data gatekeeper (v0.1)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "PyYAML>=6.0",
+  "pillow>=10.0",
+]
+
+# Heavy / environment-specific deps are OPTIONAL so the core package installs and
+# its pure logic stays testable without FiftyOne, MongoDB or a GPU.
+[project.optional-dependencies]
+fiftyone = ["fiftyone>=0.25", "fiftyone-brain>=0.16", "lancedb>=0.6"]
+yolo = ["ultralytics>=8.1"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+vix = "vix.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"

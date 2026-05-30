@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+.venv311/
+venv/
+
+# VIX runtime artifacts (DVC-tracked in real deployments, not committed here)
+/vix_workspace/
+/vixws/
+*.log
+*.npz
+*.npy
+/models/
+/mongo/
+/lancedb/
+
+# OS
+.DS_Store
+Thumbs.db

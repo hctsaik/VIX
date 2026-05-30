@@ -1,0 +1,9 @@
+name: "@vix/review"
+version: 0.1.0
+description: "VIX review workstation: confirm/relabel/dismiss + explain drill-down in the FiftyOne App"
+fiftyone:
+  version: ">=0.23"
+operators:
+  - confirm_golden
+  - dismiss_false_alarm
+  - explain_sample
