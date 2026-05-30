@@ -1,5 +1,7 @@
 # VIX — Vision Integrity eXplainability
 
+[![CI](https://github.com/hctsaik/VIX/actions/workflows/ci.yml/badge.svg)](https://github.com/hctsaik/VIX/actions/workflows/ci.yml)
+
 A **Data-Centric AI "data gatekeeper"** built as a thin layer on top of
 [FiftyOne](https://github.com/voxel51/fiftyone). It combines **YOLO confidence**
 and **DINOv2 embedding distance** to surface edge cases and label-definition

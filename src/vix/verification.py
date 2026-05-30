@@ -161,7 +161,7 @@ def run_gui(cfg: Config, execute: bool = True) -> int:
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1600, "height": 1000})
             page.goto(URL, wait_until="networkidle", timeout=60000)
-            page.wait_for_timeout(9000)
+            page.wait_for_timeout(12000)  # CI runners are slower; give the grid time to render
             page.screenshot(path=str(shots / "app.png"), full_page=True)
             print(f"[OK] App 截圖 -> {shots / 'app.png'}")
             session.selected = [rev.id]  # client 已連上,程式化選取
@@ -183,8 +183,13 @@ def run_gui(cfg: Config, execute: bool = True) -> int:
         session.close()
 
     if execute:
-        ds.reload()
-        tags = ds.match({"vix_hash": "rev1"}).first().tags
+        tags = []
+        for _ in range(15):  # poll for the operator's effect (robust to CI timing)
+            ds.reload()
+            tags = ds.match({"vix_hash": "rev1"}).first().tags
+            if "golden" in tags:
+                break
+            time.sleep(1)
         ok = "golden" in tags
         print(f"[{'PASS' if ok else 'FAIL'}] GUI 執行 confirm_golden -> rev1 tags={tags}")
     fo.delete_dataset(DATASET)
