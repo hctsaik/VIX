@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VIX 標準操作手冊 (SOP) — 給工程師的完整教學</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --card:#1b1f27; --line:#2a2f3a;
+    --fg:#e8eaed; --muted:#9aa0a6; --red:#e62828; --blue:#3aa7c2;
+    --green:#54c06a; --gold:#e2b53a; --code:#7fd1ff;
+    --native:#3aa7c2; --vix:#e2882a;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",system-ui,sans-serif;line-height:1.75;}
+  a{color:var(--blue);text-decoration:none;} a:hover{text-decoration:underline;}
+  .layout{display:flex;align-items:flex-start;max-width:1280px;margin:0 auto;}
+  nav.toc{position:sticky;top:0;flex:0 0 280px;height:100vh;overflow:auto;
+    padding:24px 16px;border-right:1px solid var(--line);background:var(--panel);}
+  nav.toc h2{font-size:.8rem;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;margin:18px 0 8px;}
+  nav.toc a{display:block;color:var(--fg);padding:5px 10px;border-radius:7px;font-size:.92rem;}
+  nav.toc a:hover{background:#222733;text-decoration:none;}
+  nav.toc a .r{color:var(--muted);font-size:.78rem;font-weight:400;}
+  nav.toc .lv2{padding-left:24px;color:var(--muted);font-size:.86rem;}
+  nav.toc .brand{font-size:1.2rem;font-weight:800;margin-bottom:4px;}
+  main{flex:1 1 auto;min-width:0;padding:36px 40px 120px;}
+  h1{font-size:2.1rem;margin:0 0 6px;}
+  h2.sec{font-size:1.55rem;margin:46px 0 14px;padding-top:14px;border-top:1px solid var(--line);}
+  h3{font-size:1.18rem;margin:30px 0 10px;}
+  p{margin:10px 0;}
+  .sub{color:var(--muted);}
+  code{background:#000;color:var(--code);padding:2px 7px;border-radius:5px;font-size:.9em;}
+  pre{background:#05070b;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;}
+  pre code{background:none;color:#c8e6ff;padding:0;font-size:.86rem;line-height:1.6;}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:.93rem;}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top;}
+  th{background:#222733;}
+  tr:nth-child(even) td{background:#15181f;}
+  img{max-width:100%;border:1px solid var(--line);border-radius:10px;display:block;margin:12px 0 4px;}
+  figure{margin:18px 0;} figcaption{color:var(--muted);font-size:.86rem;}
+  .tag{display:inline-block;font-size:.72rem;font-weight:700;padding:2px 9px;border-radius:20px;vertical-align:middle;margin-left:8px;}
+  .tag.native{background:rgba(58,167,194,.18);color:#7fd6ea;border:1px solid var(--native);}
+  .tag.vix{background:rgba(226,136,42,.18);color:#f0b070;border:1px solid var(--vix);}
+  .note{border-left:4px solid var(--blue);background:#14222a;padding:12px 16px;border-radius:8px;margin:16px 0;}
+  .warn{border-left:4px solid var(--gold);background:#231f12;padding:12px 16px;border-radius:8px;margin:16px 0;}
+  .tip{border-left:4px solid var(--green);background:#13241a;padding:12px 16px;border-radius:8px;margin:16px 0;}
+  .check{border-left:4px solid var(--green);background:#0f2417;padding:10px 16px;border-radius:8px;margin:14px 0;font-size:.93rem;}
+  .check b{color:#8fe0a3;}
+  .ref{background:#241c12;border:1px dashed var(--vix);color:#f0c490;padding:8px 14px;border-radius:8px;margin:10px 0 18px;font-size:.9rem;}
+  .cta{background:linear-gradient(180deg,#15263a,#122033);border:1px solid #2f5f86;border-radius:14px;padding:20px 24px;margin:22px 0;}
+  .cta h3{margin-top:0;color:#bfe0ff;}
+  ol li,ul li{margin:6px 0;}
+  .steps{counter-reset:s;list-style:none;padding-left:0;}
+  .steps>li{counter-increment:s;position:relative;padding:6px 0 6px 44px;}
+  .steps>li::before{content:counter(s);position:absolute;left:0;top:6px;width:28px;height:28px;
+    background:var(--red);color:#fff;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:.9rem;}
+  kbd{background:#2a2f3a;border:1px solid #3a4150;border-bottom-width:2px;border-radius:5px;padding:1px 7px;font-size:.85em;}
+  .pill{display:inline-block;background:#222733;border:1px solid var(--line);border-radius:6px;padding:1px 8px;font-size:.85em;color:#cfd6df;}
+  .flow{font-size:.95rem;background:#15181f;border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:8px 0;}
+  footer{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);margin-top:50px;padding-top:18px;}
+  @media(max-width:920px){
+    .layout{flex-direction:column;} nav.toc{position:static;height:auto;width:100%;flex-basis:auto;border-right:none;border-bottom:1px solid var(--line);}
+    main{padding:24px 18px 80px;}
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+  <div class="brand">VIX SOP</div>
+  <div class="sub" style="font-size:.82rem;">v0.1 · 給工程師的操作手冊</div>
+  <h2>必讀</h2>
+  <a href="#intro">0. 這份文件 &amp; VIX 是什麼</a>
+  <a href="#concept">1. 觀念:FiftyOne vs VIX</a>
+  <a href="#glossary" class="lv2">名詞表 + 生命週期</a>
+  <a href="#setup">2. 安裝與啟動</a>
+  <a href="#happy">★ 從這裡開始 (Happy Path)</a>
+  <h2>A · 原生 FiftyOne</h2>
+  <a href="#a1">A1. 啟動 / 切換資料集</a>
+  <a href="#a2">A2. 格狀 / 放大 / 篩選 <span class="r">參考</span></a>
+  <a href="#a3">A3. Embeddings 看分群</a>
+  <h2>B · VIX 客製</h2>
+  <a href="#b0">B0. 兩種資料集 + 前置需求</a>
+  <a href="#b1">B1. 一條龍 vix run</a>
+  <a href="#b2">B2. 逐步指令 <span class="r">參考</span></a>
+  <a href="#b3">B3. 覆核佇列 &amp; VIX 欄位</a>
+  <a href="#b4">B4. App 內 @vix/review</a>
+  <a href="#b5">B5. 稽核帳本 <span class="r">參考</span></a>
+  <a href="#b6">B6. 進階診斷指令 <span class="r">參考</span></a>
+  <h2>實戰 &amp; 附錄</h2>
+  <a href="#scenario">C. 標準情境 SOP</a>
+  <a href="#explore">D. 探索更多 / 排解</a>
+  <a href="#appendix">附錄:CLI 全指令 <span class="r">參考</span></a>
+</nav>
+
+<main>
+
+<h1>VIX 標準操作手冊 (SOP)</h1>
+<p class="sub">Vision Integrity eXplainability — Data-Centric AI 資料把關工具。本手冊讓任何工程師「看了就會用」,同時涵蓋
+  <span class="tag native">原生 FiftyOne</span> 與 <span class="tag vix">VIX 客製</span> 兩部分。</p>
+
+<div class="note">
+  <b>怎麼讀這份文件:</b>標 <span class="tag native">原生</span> 的是 FiftyOne 本來就有的;標 <span class="tag vix">VIX 客製</span>
+  的是本專案額外開發的。第一次使用:看完 <b>0 / 1 / 2</b> 後直接照 <a href="#happy">★ 從這裡開始</a> 跑一遍。
+  側欄標 <span style="color:var(--muted)">參考</span> 的章節初次可略過,遇到特定需求再回來查。
+</div>
+
+<!-- ============ 0 ============ -->
+<h2 class="sec" id="intro">0. 這份文件 &amp; VIX 是什麼</h2>
+<p>VIX 是一個<b>「資料把關員 (data gatekeeper)」</b>:在你把新資料丟進去訓練 YOLO/偵測模型<b>之前</b>,
+  幫你回答兩個平常難以回答的問題 ——</p>
+<ol>
+  <li>我剛加的這批資料,到底會讓模型<b>變好還是變壞</b>?(資料歸因)</li>
+  <li>我的新資料是不是悄悄讓某個類別的<b>定義漂移</b>了?(概念漂移)</li>
+</ol>
+<p>做法:用 <b>YOLO 信心度</b> + <b>DINOv2 特徵距離</b> 兩個軸,自動把每張圖判成「直接通過 (pass)」或
+  「需人工覆核 (review)」並附<b>白話理由</b>;人工在 GUI 確認後寫回,全程留下<b>不可竄改的稽核帳本</b>。</p>
+<p>VIX 蓋在 <a href="https://github.com/voxel51/fiftyone" target="_blank">FiftyOne</a> 之上 ——
+  FiftyOne 提供「看資料的眼睛」(資料庫 + GUI + 降維視覺化),VIX 補上「判斷資料好壞的大腦 + 工作流 + 稽核」。</p>
+
+<!-- ============ 1 ============ -->
+<h2 class="sec" id="concept">1. 觀念:FiftyOne 與 VIX 的分工</h2>
+<table>
+  <tr><th>層面</th><th><span class="tag native">FiftyOne 原生</span></th><th><span class="tag vix">VIX 客製</span></th></tr>
+  <tr><td>資料儲存 / GUI</td><td>✅ Dataset、MongoDB、App(格狀 / 放大 / 篩選)</td><td>沿用,不重造</td></tr>
+  <tr><td>降維視覺化</td><td>✅ brain UMAP、Embeddings 面板</td><td>沿用</td></tr>
+  <tr><td><b>「這張該不該覆核?為什麼?」</b></td><td>❌ 沒有</td><td>✅ 雙軸路由 → pass/review + 白話 <code>flag_reason</code></td></tr>
+  <tr><td>golden/anchor/review 生命週期</td><td>❌</td><td>✅ 含 append-only 雜湊鏈稽核帳本</td></tr>
+  <tr><td>資料品質演算法</td><td>❌</td><td>✅ 標籤錯誤、近重複、覆蓋缺口、漂移、校準、SPC、成本門檻、訓練前 gate…</td></tr>
+  <tr><td>工作流 CLI</td><td>FiftyOne 有自己的 CLI</td><td>✅ <code>vix</code> 47 個子指令(一條龍)</td></tr>
+  <tr><td>App 內客製按鈕</td><td>提供插件系統</td><td>✅ <code>@vix/review</code> 三個 operator</td></tr>
+</table>
+<div class="tip"><b>一句話:</b>你在 App 裡看到的格狀、Embeddings、套索框選 = FiftyOne 原生;
+  多出來的 <code>routing_decision</code>/<code>flag_reason</code> 欄位、以及按 <kbd>`</kbd> 跳出的
+  <code>VIX: …</code> operator = VIX 客製。</div>
+
+<h3 id="glossary">名詞表(務必先懂)</h3>
+<div class="flow">一張影像的<b>生命週期</b>:incoming →(<code>route</code>)→ <b>pass / review</b> →(人工確認)→
+  <b>golden</b> →(凍結子集)→ <b>anchor</b>;判定無用則 <b>rejected</b>。下表逐一解釋。</div>
+<table>
+  <tr><th>名詞</th><th>意思</th></tr>
+  <tr><td><span class="pill">golden</span></td><td>已確認、可進訓練的資料(事實基準)。</td></tr>
+  <tr><td><span class="pill">anchor</span></td><td>從 golden 凍結的一小份,<b>永不拿去訓練</b>,專門用來偵測「類別定義漂移」。</td></tr>
+  <tr><td><span class="pill">review</span></td><td>被 VIX 攔下、待人工覆核的樣本。</td></tr>
+  <tr><td><span class="pill">pass</span></td><td>VIX 判定可自動通過。</td></tr>
+  <tr><td><span class="pill">rejected / dismiss</span></td><td>被人工標為誤報 / 有害,排除於覆核佇列。</td></tr>
+  <tr><td><span class="pill">flag_reason</span></td><td>VIX 攔下這張的白話理由(可能多條):低信心 / 離已知太遠 / 支撐不足。</td></tr>
+  <tr><td colspan="2" style="background:#222733;font-weight:700;">演算法術語(B6 會用到)</td></tr>
+  <tr><td><span class="pill">DINOv2</span></td><td>自監督影像特徵抽取模型(ViT-B/14),把圖變成 768 維特徵向量。</td></tr>
+  <tr><td><span class="pill">kNN 距離</span></td><td>到最近的已知 golden 的特徵距離;越大代表這張越「陌生」。</td></tr>
+  <tr><td><span class="pill">UMAP</span></td><td>把高維特徵壓成 2D 好畫成「特徵地圖」的降維法。</td></tr>
+  <tr><td><span class="pill">SPC</span></td><td>統計製程管制(控制圖);這裡用來對「覆核率」做趨勢預警。</td></tr>
+  <tr><td><span class="pill">covariate vs concept 漂移</span></td><td>輸入分布變了(covariate) vs 同樣輸入但標準/標籤定義變了(concept)。</td></tr>
+</table>
+
+<!-- ============ 2 ============ -->
+<h2 class="sec" id="setup">2. 安裝與啟動</h2>
+<p class="sub">完整跨機器步驟見 <a href="../SETUP_OTHER_MACHINE.md">docs/SETUP_OTHER_MACHINE.md</a>。以下為最短路徑。</p>
+<div class="warn"><b>關鍵前提:</b>必須用 <b>Python 3.11</b>(FiftyOne 不支援 3.13/3.14)。CPU 即可,不需 GPU。</div>
+<p><b>Windows 一鍵安裝</b>(在專案根目錄):</p>
+<pre><code>git clone https://github.com/hctsaik/VIX.git
+cd VIX
+.\scripts\setup_tier2.ps1          # 建 .venv311 + 裝 FiftyOne/torch/playwright + Chromium</code></pre>
+
+<h3>啟用環境(每開新終端做一次)</h3>
+<pre><code>.\.venv311\Scripts\Activate.ps1    # 啟用後本頁所有 vix … 指令即可直接打</code></pre>
+<div class="note">本手冊指令一律寫成 <code>vix …</code>。<b>每開一個新的 PowerShell 視窗都要先 Activate 一次</b>,否則會「找不到 vix」。
+  不想啟用也可直接用完整路徑 <code>.\.venv311\Scripts\vix.exe …</code>。<br>
+  <b>雙終端模型:</b>App 伺服器(<code>serve_*.py</code> 或 <code>vix app</code>)會佔住一個終端常駐,所以請<b>另開一個終端</b>跑其它 <code>vix</code> 指令。</div>
+
+<h3>啟動原生示範資料集(給 A 章用)</h3>
+<pre><code>.\.venv311\Scripts\python.exe examples\serve_animals.py   # 第一次會下載 CIFAR-10,約 1–2 分鐘</code></pre>
+<div class="check"><b>✓ 完成後應看到:</b>終端出現 <code>READY: 'vix_animals' … -&gt; http://localhost:5151</code>,
+  瀏覽器開 <code>http://localhost:5151</code> 看到動物照片格狀。沒看到 → 見 <a href="#explore">D 疑難排解</a>。</div>
+
+<!-- ============ Happy Path ============ -->
+<h2 class="sec" id="happy">★ 從這裡開始 (Happy Path)</h2>
+<div class="cta">
+  <h3>第一次使用?分兩條路走一遍就懂:</h3>
+  <p><b>路線 A —— 先熟悉「看資料」(原生 FiftyOne,5 分鐘):</b><br>
+     跑 <code>examples\serve_animals.py</code> → 開 <code>http://localhost:5151</code> →
+     照 <a href="#a3">A3</a> 開 Embeddings 面板、框選一群、反查那群是什麼影像。<br>
+     <span class="sub">這條用內建的 <code>vix_animals</code> 示範集,純粹讓你會操作 App。</span></p>
+  <p style="margin-top:14px;"><b>路線 B —— 跑一次「資料把關」(VIX 客製,你自己的偵測資料):</b></p>
+  <pre style="margin:6px 0;"><code>vix run --input ./incoming --batch w22 --weights yolov8n.pt   # 一條龍:匯入→偵測→embedding→路由→gate
+vix review-queue --top 40                                     # 看哪些被攔、為什麼
+vix app                                                        # 進 GUI 覆核(開的是 VIX 工作資料集)</code></pre>
+  <p class="sub">完整版含覆核與匯出見 <a href="#scenario">C. 標準情境 SOP</a>。路線 B 需要你自備 YOLO 權重與影像 —— 見 <a href="#b0">B0 前置需求</a>。</p>
+</div>
+
+<!-- ============ A1 ============ -->
+<h2 class="sec" id="a1">A1. 啟動 App 與切換資料集 <span class="tag native">原生</span></h2>
+<ol class="steps">
+  <li>瀏覽器開 <code>http://localhost:5151</code>。</li>
+  <li>點左上角<b>資料集名稱</b>(紅框)→ 下拉選要看的資料集;或把網址改成
+      <code>http://localhost:5151/datasets/vix_animals</code>。</li>
+</ol>
+<figure><img src="img/step1.png" alt="切換資料集"><figcaption>A1:點左上資料集名稱切換。看到黑白方塊代表停在舊測試集 <code>vix_verify</code>,切到 <code>vix_animals</code> 即是真實照片。</figcaption></figure>
+
+<!-- ============ A2 ============ -->
+<h2 class="sec" id="a2">A2. 格狀檢視 · 放大 · 篩選 <span class="tag native">原生</span></h2>
+<div class="ref">參考章節 —— 熟悉基本操作用,趕時間可略過。</div>
+<ul>
+  <li><b>格狀</b>:中央就是所有縮圖,左下角顯示標籤。</li>
+  <li><b>放大單張</b>:點任一縮圖看大圖與右側欄位;<kbd>Esc</kbd> 返回。</li>
+  <li><b>FILTER 側欄</b>(左):展開某欄位即可篩選。例如展開 <code>ground_truth</code> 只勾 <span class="pill">cat</span>,格狀就只剩貓,並顯示各類別張數。</li>
+  <li><b>調色盤 icon</b> 切換上色依據;<b>放大鏡 icon</b> 用查詢語法搜尋。</li>
+</ul>
+<figure><img src="../spec/img/animals_app_grid.png" alt="格狀檢視"><figcaption>原生格狀檢視:左為 FILTER 側欄,中央縮圖,每張帶 <code>ground_truth</code> 標籤。</figcaption></figure>
+
+<!-- ============ A3 ============ -->
+<h2 class="sec" id="a3">A3. Embeddings 看影像分群(框選反查) <span class="tag native">原生</span></h2>
+<p>FiftyOne 最有價值的功能:把每張圖變成「特徵地圖」上的一個點,<b>長得越像的越靠近、自然聚成一群</b>。
+   你可以「框一團 → 反查那團是什麼影像」,用來找標錯 / 異常 / 容易混淆的樣本。</p>
+<figure><img src="../spec/img/animals_umap.png" alt="UMAP 分群"><figcaption>vix_animals 的特徵地圖:船(青)、汽車(橘)各自獨立;鳥(綠)、馬(紫)清楚;貓(紅)、狗(藍)相鄰重疊(視覺最像)。</figcaption></figure>
+<ol class="steps">
+  <li>切到 <code>vix_animals</code>(見 A1)。</li>
+  <li>點 <b>Samples</b> 分頁旁的 <b>＋</b>(New panel)→ 選 <b>Embeddings</b>。</li>
+  <li>面板右上兩個下拉:左邊選 <code>feat_umap</code>、右邊 <b>Color by</b> 選 <code>ground_truth</code>。</li>
+  <li>滑鼠移到點雲上 → 右上浮出工具列 → 選 <b>套索 Lasso</b> → 在圖上<b>按住拖曳圈一團</b>。</li>
+  <li>框完後格狀上方出現「<b>N selected</b>」與選單 → 點 <b>Only show selected samples</b>。</li>
+  <li>格狀只剩那群:看左下標籤 / 在 FILTER 看 <code>ground_truth</code> 組成 / 點縮圖放大查證。</li>
+</ol>
+<figure><img src="img/step3.png" alt="設定面板"><figcaption>A3 步驟 3:右上兩個下拉選 <code>feat_umap</code> 與 <code>ground_truth</code>。</figcaption></figure>
+<figure><img src="img/step6.png" alt="反查結果"><figcaption>A3 步驟 5–6 的結果(此例圈到「船」那團):112 張中 94% 是 ship,混入的少數鳥/貓/狗就是「長得像船」的可疑樣本,最該優先覆核。</figcaption></figure>
+<div class="note"><code>feat_umap</code> 這個下拉選項是 <code>serve_animals.py</code> 事先用 brain 算好的。
+  <b>換成你自己的資料集</b>時,要先跑一次 brain 降維(<code>fiftyone.brain.compute_visualization</code>,可參考 <code>examples/serve_animals.py</code>)Embeddings 面板才有東西可選。</div>
+<div class="tip">完整 0–7 步圖解另有獨立頁:<a href="EMBEDDINGS_HOWTO.html">EMBEDDINGS_HOWTO.html</a>。</div>
+
+<!-- ============ B0 ============ -->
+<h2 class="sec" id="b0">B0. 兩種資料集 + 前置需求(動手前必看) <span class="tag vix">VIX 客製</span></h2>
+<div class="warn">
+  <b>本工具用到「兩個不同的資料集」,別搞混:</b>
+  <table style="margin-top:8px;">
+    <tr><th>資料集</th><th>哪來的 / 給誰用</th><th>有 VIX 欄位嗎</th></tr>
+    <tr><td><code>vix_animals</code></td><td>CIFAR-10 分類示範,<code>serve_animals.py</code> 建。<b>只給 A 章</b>熟悉原生 App。</td><td>❌ 沒有</td></tr>
+    <tr><td><code>vix</code></td><td>VIX 的工作資料集,跑 <code>vix ingest</code>/<code>vix run</code> 後產生。<b>B/C 章都用它</b>;<code>vix app</code> 開的就是它。</td><td>✅ 有 routing_decision/flag_reason…</td></tr>
+  </table>
+</div>
+<div class="warn">
+  <b>路線 B 的前置需求(本專案不附帶這些):</b>
+  <ul>
+    <li><b>一個 YOLO 權重檔</b> —— 例如從 Ultralytics 下載 <code>yolov8n.pt</code>,或你自己訓練的 <code>.pt</code>。</li>
+    <li><b>你自己的影像資料夾</b> —— 至少要有 golden 基準集 + 想檢查的新批次。</li>
+    <li><b>第一次使用要先建立 golden/anchor 基準</b>(見 <a href="#b2">B2</a>)。<code>route</code>/<code>guard</code>/<code>gate</code> 與 <code>knn_dist</code>(到 golden 的距離)只有在 golden 已存在時才有意義。</li>
+  </ul>
+</div>
+
+<!-- ============ B1 ============ -->
+<h2 class="sec" id="b1">B1. 一條龍工作流 <code>vix run</code> <span class="tag vix">VIX 客製</span></h2>
+<p>一行把「匯入 → YOLO 偵測 → DINOv2 embedding → 路由 → 漂移自檢 → 報告 → gate → 匯出」全跑完。</p>
+<pre><code>vix run --input ./incoming --batch w22 --weights yolov8n.pt --export ./train_ready</code></pre>
+<table>
+  <tr><th>參數</th><th>說明</th></tr>
+  <tr><td><code>--input</code></td><td>要先匯入的影像資料夾</td></tr>
+  <tr><td><code>--batch</code></td><td>這批資料的批次代號(之後追溯用)</td></tr>
+  <tr><td><code>--weights</code></td><td>YOLO 權重檔(見 B0)</td></tr>
+  <tr><td><code>--export</code></td><td>(選填)最後匯出 YOLO 訓練格式到此資料夾</td></tr>
+</table>
+<div class="check"><b>✓ 跑完應看到:</b>終端列出 pass/review 張數與 <b>GO / NO-GO</b>;之後 <code>vix app</code> 的 FILTER 側欄會出現
+  <code>routing_decision</code>、<code>flag_reason</code> 欄位。沒看到 → 見 <a href="#explore">D</a>。</div>
+<div class="note">想離線、不接 FiftyOne 試跑邏輯,任何指令加 <code>--adapter memory</code> 即可用記憶體後端。</div>
+
+<!-- ============ B2 ============ -->
+<h2 class="sec" id="b2">B2. 逐步指令(想細看每一步) <span class="tag vix">VIX 客製</span></h2>
+<div class="ref">參考章節 —— B1 的 <code>vix run</code> 就是把這些串起來;想拆開逐步控制時看這裡。</div>
+<pre><code>vix ingest ./golden   --batch init --golden     # 匯入黃金集(事實基準) ← 第一次必做
+vix ingest ./anchor   --batch init --anchor     # 凍結錨點(永不訓練,偵測漂移) ← 第一次必做
+vix ingest ./incoming --batch w22               # 新批次
+vix infer  --weights yolov8n.pt                  # YOLO -> 偵測
+vix embed                                        # DINOv2 ViT-B/14 + kNN 索引
+vix calibrate                                    # 算 per-class 門檻
+vix route                                        # 判 pass/review + flag_reason
+vix review-queue --top 40                        # 最高風險先看
+vix guard  --build                               # 凍結參考的漂移自檢
+vix gate                                         # 能不能訓練?GO / NO-GO
+vix report ./out                                 # 品質分數 + 導覽報告
+vix export ./train_ready                         # 匯出 YOLO txt + data.yaml + 逐檔 hash</code></pre>
+<table>
+  <tr><th>指令</th><th>作用</th></tr>
+  <tr><td><code>ingest &lt;folder&gt; --batch B [--golden|--anchor]</code></td><td>匯入影像;標成 golden 或 anchor。</td></tr>
+  <tr><td><code>infer --weights yolov8n.pt</code></td><td>跑 YOLO,寫入偵測與信心度。</td></tr>
+  <tr><td><code>embed</code></td><td>算 DINOv2 特徵 + 建 kNN 索引(算「離已知有多遠」)。</td></tr>
+  <tr><td><code>calibrate</code> → <code>route</code></td><td>算每類門檻 → 依信心度/距離判 pass/review,寫入 <code>flag_reason</code>。</td></tr>
+  <tr><td><code>gate</code></td><td>訓練前 go/no-go 把關,輸出 GO / NO-GO。</td></tr>
+  <tr><td><code>sync-reviews</code></td><td>把記在 <code>review_decision</code> 欄位的覆核決策批次寫回(見 B4 註)。</td></tr>
+  <tr><td><code>report &lt;dst&gt; [--version V]</code></td><td>一鍵健康報告(自動對比上一份)。</td></tr>
+  <tr><td><code>export &lt;dst&gt; [--classes a,b] [--copy-images]</code></td><td>單向匯出 golden → YOLOv8 訓練格式 + 逐檔雜湊清單。</td></tr>
+</table>
+
+<!-- ============ B3 ============ -->
+<h2 class="sec" id="b3">B3. 風險覆核佇列 &amp; VIX 多出來的欄位 <span class="tag vix">VIX 客製</span></h2>
+<p>跑完 <code>route</code> 後,用覆核佇列把<b>最該看的排前面</b>:</p>
+<pre><code>vix review-queue --top 40        # 風險排序 + 每筆白話「為什麼被攔」</code></pre>
+<p>在 <code>vix app</code> 的左側 FILTER,你會看到 VIX 寫回的<b>額外欄位</b>(原生 FiftyOne 沒有):</p>
+<table>
+  <tr><th>欄位</th><th>意義</th></tr>
+  <tr><td><code>vix_hash</code></td><td>內容雜湊,VIX 用來唯一識別一張圖。</td></tr>
+  <tr><td><code>yolo_conf_max</code></td><td>該圖 YOLO 最高信心度。</td></tr>
+  <tr><td><code>knn_dist</code></td><td>到已知 golden 的特徵距離(越大越「陌生」)。</td></tr>
+  <tr><td><code>routing_decision</code></td><td><code>pass</code> 或 <code>review</code>。</td></tr>
+  <tr><td><code>flag_reason</code></td><td>白話理由<b>清單</b>(可能多條):低信心 / 離已知太遠 / 支撐不足。</td></tr>
+</table>
+
+<!-- ============ B4 ============ -->
+<h2 class="sec" id="b4">B4. App 內的 VIX 客製按鈕:<code>@vix/review</code> <span class="tag vix">VIX 客製</span></h2>
+<p>「在 GUI 裡直接覆核」的客製插件。在 App 中按 <kbd>`</kbd>(反引號)叫出 operator 瀏覽器,搜尋 <code>VIX</code>,會看到三個操作:</p>
+<figure><img src="../spec/img/fiftyone_operators.png" alt="VIX operators"><figcaption>按 <kbd>`</kbd> → 搜尋 VIX,出現三個客製 operator。</figcaption></figure>
+<table>
+  <tr><th>Operator</th><th>作用</th></tr>
+  <tr><td><b>VIX: 確認 → 併入 golden</b><br><code>confirm_golden</code></td><td>把選取影像確認為 golden(可選填更正類別)。</td></tr>
+  <tr><td><b>VIX: 標記誤報並排除</b><br><code>dismiss_false_alarm</code></td><td>標為誤報,從覆核佇列排除。</td></tr>
+  <tr><td><b>VIX: 為何被攔(下鑽解釋)</b><br><code>explain_sample</code></td><td>對選取的一張,顯示 VIX 的判定依據。</td></tr>
+</table>
+<p><b>覆核一張的標準步驟:</b></p>
+<ol class="steps">
+  <li>在格狀<b>勾選</b>要處理的影像(左上角出現打勾)。</li>
+  <li>按 <kbd>`</kbd> → 選 <b>VIX: 確認 → 併入 golden</b>。</li>
+  <li>表單可<b>選填更正類別</b>(留空=沿用原標籤)→ 按 <b>Execute</b>。</li>
+  <li>VIX 立即透過 pipeline 寫回、記入雜湊鏈帳本,資料集自動 reload。</li>
+</ol>
+<figure><img src="../spec/img/fiftyone_operator_form.png" alt="confirm 表單"><figcaption><code>confirm_golden</code> 表單:可留空沿用原標籤,或輸入更正類別,再按 Execute。</figcaption></figure>
+<div class="note"><b>關鍵設計:</b>這三個按鈕呼叫的是<b>和 CLI 完全相同的 <code>vix.pipeline</code> 函式</b>,寫進<b>同一份</b>不可竄改的稽核帳本。
+  <br><b>關於 <code>sync-reviews</code>:</b>用這三個 operator 覆核時,<b>當下就已寫回、不需再跑 <code>sync-reviews</code></b>。
+  <code>sync-reviews</code> 只用於「先把決策寫進 <code>review_decision</code> 欄位、再批次收尾」的另一種流程。</div>
+
+<!-- ============ B5 ============ -->
+<h2 class="sec" id="b5">B5. 稽核帳本(不可竄改) <span class="tag vix">VIX 客製</span></h2>
+<div class="ref">參考章節 —— 需要追溯「誰在何時做了什麼」時看這裡。</div>
+<p>每一次決策(自動路由、人工確認、誤報)都寫進 <b>append-only 雜湊鏈</b> DecisionLog,環環相扣、不可事後竄改。</p>
+<pre><code>vix explain &lt;vix_hash&gt;      # 這張「為何被這樣判」
+vix history &lt;vix_hash&gt;      # 這張的決策「時間軸」
+vix audit                  # 「全體」帳本檢視 / 篩選
+vix routing-diff           # 最近兩次路由之間有什麼改變</code></pre>
+<div class="tip"><b>三者分工:</b><code>explain &lt;hash&gt;</code> = 為何這樣判;<code>history &lt;hash&gt;</code> = 這張的時間軸;<code>audit</code> = 全體帳本。</div>
+
+<!-- ============ B6 ============ -->
+<h2 class="sec" id="b6">B6. 進階診斷指令一覽 <span class="tag vix">VIX 客製</span></h2>
+<div class="ref">參考章節 —— 初次使用可跳過;遇到特定問題(重複、漂移、標錯…)再回來查。每個都可 <code>vix &lt;指令&gt; --help</code> 看參數。</div>
+<table>
+  <tr><th>類別</th><th>指令</th><th>解決什麼問題</th></tr>
+  <tr><td rowspan="5">資料品質</td><td><code>dedup</code></td><td>找近重複影像群。</td></tr>
+  <tr><td><code>audit-labels</code></td><td>用 kNN 鄰居不一致找疑似標錯。</td></tr>
+  <tr><td><code>label-noise</code></td><td>用 confident-learning 找標錯與易混類別對。</td></tr>
+  <tr><td><code>coverage</code></td><td>類別分布 + 覆蓋缺口(還差幾張)。</td></tr>
+  <tr><td><code>leakage</code></td><td>train/val/test 跨集重複洩漏。</td></tr>
+  <tr><td rowspan="3">漂移 / 監控</td><td><code>drift</code> / <code>drift-type</code></td><td>跨期定義漂移;區分 covariate vs concept。</td></tr>
+  <tr><td><code>spc</code> / <code>trend</code></td><td>覆核率的 SPC 預警;各類信心度趨勢與下滑告警。</td></tr>
+  <tr><td><code>geometry</code></td><td>bbox 幾何漂移(框越畫越大/小)。</td></tr>
+  <tr><td rowspan="3">決策 / 取捨</td><td><code>active-learn</code></td><td>排序「下一批最該標哪些」(不確定性+多樣性)。</td></tr>
+  <tr><td><code>cost-gate</code></td><td>非對稱漏報/誤報成本門檻。</td></tr>
+  <tr><td><code>value</code> / <code>harmful</code> / <code>new-classes</code></td><td>新資料覆蓋多少新區域;排序最有害樣本;偵測疑似新類別。</td></tr>
+  <tr><td rowspan="2">版本 / 一致性</td><td><code>snapshot</code> / <code>restore</code></td><td>用內容雜湊做不可變版本快照 / 還原。</td></tr>
+  <tr><td><code>parity</code> / <code>reviewer-audit</code></td><td>跨組(如跨廠)效能一致性;覆核員自我一致性。</td></tr>
+</table>
+
+<!-- ============ C ============ -->
+<h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>
+<div class="warn"><b>前置:</b>已照 <a href="#b0">B0</a> 備好 YOLO 權重與影像;若是第一次,先建立 golden/anchor 基準(<a href="#b2">B2</a> 前兩行)。</div>
+<p>最常見的完整流程(記得用<b>雙終端</b>:App 開在一個終端,<code>vix</code> 指令在另一個終端):</p>
+<ol class="steps">
+  <li><b>跑流程</b>:<code>vix run --input ./incoming --batch w22 --weights yolov8n.pt</code></li>
+  <li><b>看風險</b>:<code>vix review-queue --top 40</code>,了解哪些被攔、為什麼。</li>
+  <li><b>進 GUI 覆核</b>:<code>vix app</code>(開的是 VIX 工作資料集 <code>vix</code>,用 FiftyOne 預設埠,通常 5151)→
+      在格狀勾選 review 樣本 → 按 <kbd>`</kbd> → <b>confirm_golden</b>(確認/更正)或 <b>dismiss_false_alarm</b>(誤報)。決策當下即寫回。</li>
+  <li><b>把關</b>:<code>vix gate</code> → 得到 <b>GO / NO-GO</b>。</li>
+  <li><b>出健康報告</b>:<code>vix report ./out</code>。</li>
+  <li>若 GO → <b>匯出訓練集</b>:<code>vix export ./train_ready</code>(YOLO 格式 + 逐檔雜湊)。</li>
+</ol>
+<div class="check"><b>✓ 完成後你應該有:</b><code>./train_ready</code> 內含 YOLOv8 格式標註 + <code>data.yaml</code> + 逐檔雜湊清單;
+  每個決策都進了稽核帳本(<code>vix audit</code> 可查)。</div>
+
+<!-- ============ D ============ -->
+<h2 class="sec" id="explore">D. 探索更多 / 疑難排解</h2>
+<h3>怎麼知道還有什麼能用</h3>
+<table>
+  <tr><th>想知道…</th><th>指令</th></tr>
+  <tr><td>新手流程 + 名詞解釋</td><td><code>vix quickstart</code></td></tr>
+  <tr><td>所有 CLI 指令</td><td><code>vix --help</code></td></tr>
+  <tr><td>單一指令的參數</td><td><code>vix &lt;指令&gt; --help</code></td></tr>
+  <tr><td>DB 裡有哪些資料集</td><td><code>fiftyone datasets list</code></td></tr>
+  <tr><td>App 裡有哪些操作</td><td>App 內按 <kbd>`</kbd> 叫出 operator 瀏覽器</td></tr>
+</table>
+<h3>常見問題</h3>
+<table>
+  <tr><th>症狀</th><th>處理</th></tr>
+  <tr><td>裝不起來 / FiftyOne 報錯</td><td>多半 Python 版本不對 —— 確認用 <b>3.11</b>,不是 3.13/3.14。</td></tr>
+  <tr><td>打 <code>vix</code> 說找不到指令</td><td>新終端忘了 <code>.\.venv311\Scripts\Activate.ps1</code>;或改用完整路徑 <code>.\.venv311\Scripts\vix.exe</code>。</td></tr>
+  <tr><td>App 開了是黑白方塊</td><td>停在舊測試集 <code>vix_verify</code>;網址改成 <code>/datasets/vix_animals</code>(A 章)或 <code>/datasets/vix</code>(B/C 章)。</td></tr>
+  <tr><td>Embeddings 下拉沒有 feat_umap</td><td>你的資料集還沒算 brain 降維;先跑 <code>compute_visualization</code>(見 A3 註)。</td></tr>
+  <tr><td>port 5151 被佔用</td><td>關掉其他 FiftyOne 視窗,或改腳本裡的 <code>PORT</code>。</td></tr>
+  <tr><td>operator 沒出現</td><td>確認 <code>FIFTYONE_PLUGINS_DIR</code> 指到 <code>src/vix/plugins</code>,且 <code>fiftyone.yml</code> 為純 ASCII。</td></tr>
+</table>
+
+<!-- ============ Appendix ============ -->
+<h2 class="sec" id="appendix">附錄:CLI 全指令(47) <span class="tag vix">VIX 客製</span></h2>
+<p>執行 <code>vix --help</code> 取得最新清單。v0.1 共 <b>47</b> 個子指令:</p>
+<ul>
+  <li><b>資料流</b>:<code>ingest · infer · embed · calibrate · route · export · run</code></li>
+  <li><b>覆核 / 把關</b>:<code>review-queue · gate · dismiss · resolve · sync-reviews · report · app</code></li>
+  <li><b>診斷</b>:<code>audit-labels · dedup · coverage · drift · drift-type · label-noise · leakage · harmful · new-classes · spc · trend · parity · reviewer-audit · geometry · fp-rate · value · active-learn · explain</code></li>
+  <li><b>版本 / 稽核</b>:<code>snapshot · restore · history · audit · routing-diff · relabel · merge · merge-preview</code></li>
+  <li><b>校準 / 進階</b>:<code>calibrate-confidence · cost-gate · guard</code></li>
+  <li><b>匯出完整性</b>:<code>verify</code>(比對收到的資料集 vs 匯出清單)</li>
+  <li><b>驗收(Tier-2)</b>:<code>verify-fiftyone · verify-gui</code></li>
+  <li><b>探索 / 說明</b>:<code>quickstart</code></li>
+</ul>
+
+<footer>
+  VIX v0.1 · Vision Integrity eXplainability · 本手冊截圖皆取自本機實際執行的 FiftyOne App。<br>
+  原始碼:<a href="https://github.com/hctsaik/VIX" target="_blank">github.com/hctsaik/VIX</a> ·
+  跨機器安裝:<a href="../SETUP_OTHER_MACHINE.md">SETUP_OTHER_MACHINE.md</a> ·
+  Embeddings 圖解:<a href="EMBEDDINGS_HOWTO.html">EMBEDDINGS_HOWTO.html</a>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

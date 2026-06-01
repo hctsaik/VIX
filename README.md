@@ -43,6 +43,13 @@ pip install -e ".[fiftyone,yolo,dev]"
 Air-gapped install + DINOv2 offline weights + telemetry-off: see
 [docs/spec/v0.1-technical-spec.md §1](docs/spec/v0.1-technical-spec.md).
 
+## Hand this to another engineer
+
+- **Full operator handbook (SOP, HTML):** [docs/guide/VIX_SOP.html](docs/guide/VIX_SOP.html)
+  — one page covering **both native FiftyOne and the VIX-custom features**: concepts,
+  setup, a copy-paste "happy path", the `vix` CLI workflow, the in-App `@vix/review`
+  operators, the audit ledger, and troubleshooting.
+
 ## See the clustering for yourself (demo + step-by-step guide)
 
 A CIFAR-10 animal demo (cat/dog/bird/horse/ship/automobile) you can run on any
