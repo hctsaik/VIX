@@ -1,0 +1,26 @@
+{
+  "dataset_name": {
+    "x": 174,
+    "y": 16,
+    "width": 85,
+    "height": 40
+  },
+  "umap_tab": {
+    "x": 950,
+    "y": 96,
+    "width": 76,
+    "height": 0
+  },
+  "grid_toolbar": {
+    "x": 300,
+    "y": 82,
+    "width": 650,
+    "height": 48
+  },
+  "view_bar": {
+    "x": 273,
+    "y": 11,
+    "width": 960,
+    "height": 52
+  }
+}

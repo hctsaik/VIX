@@ -43,6 +43,20 @@ pip install -e ".[fiftyone,yolo,dev]"
 Air-gapped install + DINOv2 offline weights + telemetry-off: see
 [docs/spec/v0.1-technical-spec.md §1](docs/spec/v0.1-technical-spec.md).
 
+## See the clustering for yourself (demo + step-by-step guide)
+
+A CIFAR-10 animal demo (cat/dog/bird/horse/ship/automobile) you can run on any
+machine to *see* the embedding clusters in the FiftyOne App:
+
+- **Reproduce on another computer:** [docs/SETUP_OTHER_MACHINE.md](docs/SETUP_OTHER_MACHINE.md)
+  (Python 3.11 → `scripts/setup_tier2.ps1` → `python examples/serve_animals.py` → open `http://localhost:5151`).
+- **Illustrated walkthrough (0–7 steps, annotated screenshots):**
+  [docs/guide/EMBEDDINGS_HOWTO.html](docs/guide/EMBEDDINGS_HOWTO.html)
+  ([overview](docs/guide/README.md)) — switch dataset → open Embeddings panel →
+  lasso a cluster → "only show selected" → inspect what those images are.
+
+Tier-2 (FiftyOne GUI + Playwright) pinned deps: [requirements-tier2.txt](requirements-tier2.txt).
+
 ## Workflow
 
 ```bash

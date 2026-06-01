@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VIX 圖解教學:在 FiftyOne 用 Embeddings 看影像分群</title>
+<style>
+  :root { --red:#e62828; --bg:#0f1115; --card:#1b1f27; --fg:#e8eaed; --muted:#9aa0a6; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",system-ui,sans-serif;
+         line-height:1.7; }
+  .wrap { max-width:1040px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:1.9rem; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  .note { background:#23303a; border-left:4px solid #3aa7c2; padding:12px 16px; border-radius:8px; margin:18px 0; }
+  .step { background:var(--card); border-radius:14px; padding:22px 24px; margin:22px 0;
+          box-shadow:0 2px 10px rgba(0,0,0,.35); }
+  .step h2 { display:flex; align-items:center; gap:12px; font-size:1.25rem; margin:0 0 10px; }
+  .num { flex:0 0 auto; width:38px; height:38px; border-radius:50%; background:var(--red);
+         color:#fff; font-weight:700; display:grid; place-items:center; }
+  .step p { margin:8px 0; }
+  .step img { width:100%; border-radius:10px; border:1px solid #2c313b; margin-top:12px; display:block; }
+  code { background:#000; color:#7fd1ff; padding:2px 7px; border-radius:5px; font-size:.92em; }
+  .tip { color:#ffd479; }
+  .key { color:#9be07f; font-weight:700; }
+  footer { color:var(--muted); margin-top:40px; font-size:.9rem; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>用 Embeddings 看影像分群 — 逐步圖解</h1>
+  <p class="sub">資料集:<b>vix_animals</b>(600 張:貓 / 狗 / 鳥 / 馬 / 船 / 汽車)。先確認 App 在跑:瀏覽器開 <code>http://localhost:5151</code>。紅框 / 紅圈 / 紅色數字就是你每一步要點的地方。</p>
+
+  <div class="note">
+    <b>一句話:</b>Embeddings 把每張圖變成「特徵地圖」上的一個點 —— 長得越像的圖離得越近、自然聚成一群。
+    你只要在地圖上「圈一團 → 反查那團是什麼影像」,就能找出標錯、異常、或容易混淆的樣本。
+  </div>
+
+  <div class="step">
+    <h2><span class="num">0</span>先看懂你要看的東西</h2>
+    <p>下面這張是 vix_animals 的特徵地圖(UMAP 降維),每個點 = 一張圖,顏色 = 類別。
+       可以看到 <span class="key">船(青)、汽車(橘)</span> 各自獨立成團,<span class="key">鳥(綠)、馬(紫)</span> 分得很清楚,
+       <span class="key">貓(紅)、狗(藍)</span> 相鄰且部分重疊(因為視覺特徵最像)。這就是「分群」。</p>
+    <img src="../spec/img/animals_umap.png" alt="UMAP 概念圖">
+  </div>
+
+  <div class="step">
+    <h2><span class="num">1</span>切換到 vix_animals 資料集</h2>
+    <p>點左上角的<b>資料集名稱</b>(紅框)會跳出下拉,選 <code>vix_animals</code>。
+       <br>最快的方法:直接把網址改成 <code>http://localhost:5151/datasets/vix_animals</code> 按 Enter。</p>
+    <p class="tip">⚠️ 如果你看到的是黑白方塊圖,代表停在舊的 <code>vix_verify</code> 測試資料集,照這步切過來就對了。</p>
+    <img src="img/step1.png" alt="步驟1 切換資料集">
+  </div>
+
+  <div class="step">
+    <h2><span class="num">2</span>打開 Embeddings 面板</h2>
+    <p>畫面<b>右半邊那塊點雲</b>(紅框)就是 Embeddings 面板。</p>
+    <p>如果你的畫面只有左邊格狀、沒有右邊這塊:點格狀上方 <b>Samples</b> 分頁旁邊的 <b>＋</b>(New panel)→ 選單裡點 <b>Embeddings</b>。</p>
+    <img src="img/step2.png" alt="步驟2 開面板">
+  </div>
+
+  <div class="step">
+    <h2><span class="num">3</span>設定面板:選地圖 + 上色</h2>
+    <p>面板右上有兩個下拉(紅框):</p>
+    <p>· 左邊選 <code>feat_umap</code> &nbsp;→ 要顯示哪一份降維地圖。<br>
+       · 右邊 <b>Color by</b> 選 <code>ground_truth</code> &nbsp;→ 依類別上色。</p>
+    <p>設好之後,點雲就會像<b>步驟 0</b> 那樣依類別分群、上色。</p>
+    <img src="img/step3.png" alt="步驟3 設定下拉">
+  </div>
+
+  <div class="step">
+    <h2><span class="num">4</span>框選一群(套索)</h2>
+    <p>把滑鼠移到點雲上,<b>右上角會浮出一排小工具</b>;點選「<b>套索 Lasso</b>」工具,
+       然後在地圖上<b>按住滑鼠拖曳</b>,圈住你想看的一團(下圖紅圈示意:圈住右上角那團)。放開滑鼠就完成選取。</p>
+    <p class="tip">💡 想看哪一團就圈哪一團:可以圈「兩類重疊處」找容易混淆的、或圈「遠離大家的孤點」找異常樣本。</p>
+    <img src="img/step4.png" alt="步驟4 套索框選">
+  </div>
+
+  <div class="step">
+    <h2><span class="num">5</span>只顯示選取的影像</h2>
+    <p>框完之後,<b>中間格狀上方的工具列</b>(紅框)會出現「<b>N selected</b>」(N = 你圈到的張數)和一個小選單。
+       點那個選單 → 選「<b>Only show selected samples</b>(只顯示選取)」。</p>
+    <img src="img/step5.png" alt="步驟5 只顯示選取">
+  </div>
+
+  <div class="step">
+    <h2><span class="num">6</span>看這群到底是什麼影像</h2>
+    <p>格狀現在<b>只剩你圈的那群</b>。此例圈到的是「<b>船</b>」那一團:</p>
+    <p>· 每張縮圖<b>左下角的標籤</b>就是它的類別。<br>
+       · 想看組成:左側 <b>FILTER</b> 欄展開 <code>ground_truth</code>,會列出這群各類別的張數。<br>
+       · 點任一<b>縮圖放大</b>,看大圖與所有欄位值。</p>
+    <p class="tip">🔎 真實發現:這團 112 張裡 <b>94% 是船</b>,但混進了幾隻鳥 / 貓 / 狗 / 馬 ——
+       它們的特徵「長得像船」(多半是大片水面 / 海邊背景),正是最該優先人工覆核的可疑樣本。</p>
+    <img src="img/step6.png" alt="步驟6 反查影像">
+  </div>
+
+  <div class="step">
+    <h2><span class="num">7</span>看完還原</h2>
+    <p>要回到全部 600 張:點上方 view bar 左邊的「<b>＋ add stage</b>」區(紅框)旁、或<b>最右邊的 ✕</b> 清掉篩選;
+       也可以在步驟 5 那個選單裡點「<b>Clear selection</b>(清除選取)」。</p>
+    <img src="img/step7.png" alt="步驟7 還原">
+  </div>
+
+  <footer>VIX · Embeddings 圖解教學 · 截圖取自本機 FiftyOne App(vix_animals)</footer>
+</div>
+</body>
+</html>
