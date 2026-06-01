@@ -160,7 +160,9 @@ def run_gui(cfg: Config, execute: bool = True) -> int:
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1600, "height": 1000})
-            page.goto(URL, wait_until="networkidle", timeout=60000)
+            # FiftyOne App 有常駐 websocket,網路永不 idle ->「networkidle」會卡到 timeout(CI 必掛)。
+            # 改等 DOM 載完即可,再用固定等待讓格狀算完(CI runner 較慢)。
+            page.goto(URL, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(12000)  # CI runners are slower; give the grid time to render
             page.screenshot(path=str(shots / "app.png"), full_page=True)
             print(f"[OK] App 截圖 -> {shots / 'app.png'}")
