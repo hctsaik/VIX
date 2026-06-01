@@ -68,7 +68,11 @@ def make_adapter(cfg: Config, kind: str):
         from .embedding.simple import pixel_embedding
 
         cfg.embedding_backend = "pixel_fallback"  # mark offline fallback in audit/report
-        return InMemoryAdapter(embedder=pixel_embedding)
+        # persist dry-run state so standalone commands (embed->route->explain…) work
+        # across separate CLI invocations, not only inside a single `vix run`.
+        return InMemoryAdapter(
+            embedder=pixel_embedding, state_path=cfg.workspace / "memory_state.pkl"
+        )
     from .adapters.fiftyone_adapter import FiftyOneAdapter
 
     return FiftyOneAdapter(cfg)
@@ -195,6 +199,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sdt = sub.add_parser("drift-type", help="covariate vs concept drift between two tags (#3)")
     sdt.add_argument("--from", dest="from_tag", required=True)
     sdt.add_argument("--to", dest="to_tag", required=True)
+    scmp = sub.add_parser("compare", help="side-by-side compare two tagged subsets (e.g. two annotation vendors) (AC4)")
+    scmp.add_argument("--tag-a", dest="tag_a", required=True)
+    scmp.add_argument("--tag-b", dest="tag_b", required=True)
     ssp = sub.add_parser("spc", help="SPC EWMA/CUSUM leading indicator on per-batch review-rate (#4)")
     ssp.add_argument("--method", choices=["ewma", "cusum"], default="ewma")
     ssp.add_argument("--target", type=float, default=None)
@@ -233,6 +240,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # CLI prints Chinese + ⚠️; the default Windows cp950 console raises UnicodeEncodeError
+    # on those, so force UTF-8 (errors=replace) before any output.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     args = _build_parser().parse_args(argv)
     cfg = Config(workspace=args.workspace) if args.workspace else Config()
     cfg.ensure_dirs()
@@ -262,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"inferred {n} images")
 
     elif args.cmd == "embed":
-        adapter.compute_embeddings()
+        adapter.compute_embeddings(cfg.dinov2_model_key)
         adapter.build_knn_index()
         print("embeddings + kNN index built")
 
@@ -322,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "active-learn":
         for r in pipeline.active_learn(adapter, cfg, args.budget):
             print(f"{r['id']}  score={r['score']}  (uncertainty={r['uncertainty']}, novelty={r['novelty']})")
+            print(f"    why: {r['why']}")
 
     elif args.cmd == "drift":
         result = pipeline.drift_periods(adapter, cfg, args.from_tag, args.to_tag)
@@ -390,7 +405,9 @@ def main(argv: list[str] | None = None) -> int:
                                   weights=args.weights, export_dst=args.export_dst)
         print(f"run: gate={s['gate']} quality={s['quality_score']}/100 "
               f"(route={s['route']['pass']}p/{s['route']['review']}r, "
-              f"{s['n_duplicate_groups']} dup groups, {s['n_label_errors']} label errors)")
+              f"{s['n_duplicate_groups']} dup groups, {s['n_label_errors']} label errors, "
+              f"{s['n_leakage']} leakage, audit_verified={s['audit_verified']}, "
+              f"backend={cfg.embedding_backend})")
         return 0 if s["gate"] == "GO" else 2
 
     elif args.cmd == "history":
@@ -458,6 +475,19 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "drift-type":
         r = pipeline.drift_type(adapter, cfg, args.from_tag, args.to_tag)
         print(f"{r['verdict']}: cov={r['covariate_shift']} pred={r['prediction_shift']} | {r['recommended_action']}")
+        print("注:以 DINOv2 embedding 為訊號;若僅解析度/檔案格式改變而視覺外觀一致可能不觸發 —"
+              " 請搭配 `vix geometry` 與來源端 metadata 檢查。")
+
+    elif args.cmd == "compare":
+        r = pipeline.compare(adapter, cfg, args.tag_a, args.tag_b)
+        for tag in r["tags"]:
+            p = r["per_tag"][tag]
+            print(
+                f"[{tag}] 樣本={p['n_samples']} 偵測={p['n_detections']} "
+                f"標籤雜訊={p['noise_pct']}% 疑似錯標={p['n_label_issues']} "
+                f"近重複群={p['dup_groups']} 冗餘={p['redundant']}"
+            )
+        print(f"跨來源回收(tag-b 與 tag-a 近重複)= {r['cross_recycled']}")
 
     elif args.cmd == "spc":
         series = pipeline.review_rate_series(adapter, cfg)
@@ -516,7 +546,11 @@ def main(argv: list[str] | None = None) -> int:
 
     elif args.cmd == "reviewer-audit":
         for rev, info in pipeline.reviewer_audit(adapter, cfg, class_filter=args.class_filter).items():
-            print(f"{rev}: consistency={info['intra_consistency']:.2f}, conflicts={len(info['conflicts'])}")
+            flag = " [樣本不足,僅供參考]" if info.get("insufficient") else ""
+            print(f"{rev}: consistency={info['intra_consistency']:.2f}, "
+                  f"conflicts={len(info['conflicts'])}, n={info.get('n_decisions', 0)}{flag}")
+        print("注:本指標僅量測『自我一致性』(同一人對近乎相同的樣本是否給相同決策),"
+              "無法證明某次『確認』是否真的有人看過。")
 
     elif args.cmd == "gate":
         r = pipeline.pre_train_gate_stage(adapter, cfg)
@@ -533,7 +567,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "verify":
         res = pipeline.verify_dataset(cfg, args.manifest, args.data_dir)
         print(f"ok={res['ok']} checked={res['n_checked']} "
-              f"mismatched={res['mismatched']} missing={res['missing']}")
+              f"mismatched={res['mismatched']} missing={res['missing']} "
+              f"unexpected={res.get('unexpected', [])}")
         return 0 if res["ok"] else 2
 
     return 0

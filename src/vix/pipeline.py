@@ -244,7 +244,12 @@ def export(
     dst: str | Path,
     copy_images: bool = False,
 ) -> dict:
-    records = [(src, dets) for _h, src, dets in adapter.get_by_tag(Tag.GOLDEN)]
+    # exclude samples marked rejected/dismissed (PII removal, harmful) — they must NOT export (AD8)
+    records = [
+        (src, dets)
+        for _h, src, dets, tags in adapter.samples()
+        if Tag.GOLDEN in tags and Tag.REJECTED not in tags
+    ]
     res = DatasetExporter(class_names).export(records, dst, copy_images=copy_images)
     manifest = verify_mod.write_dir_manifest(dst)  # hashes images + labels + data.yaml (U8/V8)
     res["export_manifest"] = str(manifest)
@@ -476,8 +481,9 @@ def merge_maps(map_a: dict, map_b: dict, overrides: dict | None = None):  # T2
 
 
 def relabel_dataset(adapter, cfg, mapping: dict[str, str], change_log_path=None):  # T4
-    records, det_refs = [], {}
+    records, det_refs, dets_by_h = [], {}, {}
     for h, _src, dets, _t in adapter.samples():
+        dets_by_h[h] = dets
         for i, det in enumerate(dets):
             rid = f"{h}:{i}"
             records.append((rid, det.label))
@@ -485,6 +491,8 @@ def relabel_dataset(adapter, cfg, mapping: dict[str, str], change_log_path=None)
     new, changes = _relabel(records, mapping)
     for rid, label in new:
         det_refs[rid].label = label  # mutate in place (in-memory refs)
+    for h in {c.id.split(":")[0] for c in changes}:  # persist so the change survives across CLI invocations
+        adapter.set_detections(h, dets_by_h[h])
     diff = migration_diff(changes)
     path = Path(change_log_path or (cfg.workspace / "relabel_changes.jsonl"))
     with open(path, "a", encoding="utf-8") as f:
@@ -544,13 +552,20 @@ def quality_trend(adapter, cfg, drop_threshold=0.15):  # U10
     return res
 
 
-def reviewer_audit(adapter, cfg, sim_threshold=0.9, class_filter=None):  # U2 / Z7
+def reviewer_audit(adapter, cfg, sim_threshold=0.9, class_filter=None, min_samples=10):  # U2 / Z7
     decisions = [
         {"reviewer_id": r.get("reviewer_id", ""), "id": r.get("vix_hash", ""), "decision": r.get("decision", "")}
         for r in DecisionLog(cfg.decision_log_path).read_all()
         if r.get("vix_hash") and r.get("event") in ("route", "review")
     ]
     result = reviewer_consistency(decisions, _image_items(adapter), sim_threshold, label_filter=class_filter)
+    counts: dict[str, int] = {}
+    for d in decisions:
+        counts[d["reviewer_id"]] = counts.get(d["reviewer_id"], 0) + 1
+    for rid, info in result.items():  # annotate so a rubber-stamper / low-sample reviewer is visible
+        if isinstance(info, dict):
+            info["n_decisions"] = counts.get(rid, 0)
+            info["insufficient"] = counts.get(rid, 0) < min_samples  # too few to judge consistency
     log.info("reviewer_audit: %d reviewers analysed (class=%s)", len(result), class_filter or "all")
     return result
 
@@ -584,9 +599,11 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     overlap = sum(
         1 for g in cross_split_leakage(items) if {"golden", "train"} <= set(g["splits"])
     )
+    audit_ok = DecisionLog(cfg.decision_log_path).verify_chain()  # a tampered ledger -> NO-GO
     result = pre_train_gate(
         n_review_open=n_review, golden_train_overlap=overlap,
         under_represented=under, drift_triggered=drift_triggered,
+        audit_chain_intact=audit_ok,
     )
     DecisionLog(cfg.decision_log_path).append(
         "pre_train_gate", decision=result.verdict, extra={"reasons": result.reasons}
@@ -700,6 +717,8 @@ def false_positive_rate(cfg):  # V6 FP tracking
     recs = DecisionLog(cfg.decision_log_path).read_all()
     reviewed = sum(1 for r in recs if r.get("event") == "route" and r.get("decision") == "review")
     dismissed = sum(len(r.get("extra", {}).get("ids", [])) for r in recs if r.get("event") == "dismiss")
+    # also count false alarms recorded via the review-resolve path (operators / sync-reviews), not only `dismiss`
+    dismissed += sum(1 for r in recs if r.get("event") == "review" and r.get("decision") == "false_alarm")
     fp = dismissed / reviewed if reviewed else 0.0
     return {"reviewed": reviewed, "dismissed_false_alarms": dismissed, "fp_rate": round(fp, 3)}
 
@@ -715,11 +734,15 @@ def relabel_rollback(adapter, cfg, change_log_path=None):  # V7 rollback via cha
             undo[c["id"]] = c["old"]
     n = 0
     for h, _s, dets, _t in adapter.samples():
+        touched = False
         for i, det in enumerate(dets):
             rid = f"{h}:{i}"
             if rid in undo and det.label != undo[rid]:
                 det.label = undo[rid]
                 n += 1
+                touched = True
+        if touched:
+            adapter.set_detections(h, dets)  # persist the rollback across CLI invocations
     DecisionLog(cfg.decision_log_path).append("relabel_rollback", decision=str(n))
     log.info("relabel_rollback: restored %d labels", n)
     return n
@@ -837,8 +860,8 @@ def calibrate_confidence(conf, correct, cfg):  # concept #1
     return payload
 
 
-def label_noise(adapter, cfg, k=None):  # concept #2 (confident learning on embedding-kNN pseudo-preds)
-    items = _detection_items(adapter, want_tags=[Tag.GOLDEN])
+def label_noise(adapter, cfg, k=None, want_tags=None):  # concept #2 (confident learning on embedding-kNN pseudo-preds)
+    items = _detection_items(adapter, want_tags=want_tags or [Tag.GOLDEN])
     if len(items) < 2:
         return {"issues": [], "noise_rates": {}}
     ids = [it.id for it in items]
@@ -862,6 +885,41 @@ def label_noise(adapter, cfg, k=None):  # concept #2 (confident learning on embe
     )
     log.info("label_noise: %d issues, %d class-pair noise rates", len(issues), len(rates))
     return {"issues": issues, "noise_rates": rates}
+
+
+def compare(adapter, cfg, tag_a, tag_b, k=None, max_distance=0.05):  # AC4: side-by-side vendor/source comparison
+    """One-shot side-by-side comparison of two tagged subsets (e.g. two annotation
+    vendors): per-subset label-noise %, near-duplicate filler, plus cross-subset
+    'recycling' (images in B that are near-duplicates of an image in A)."""
+    out: dict = {"tags": [tag_a, tag_b], "per_tag": {}, "cross_recycled": 0}
+    embs: dict[str, np.ndarray] = {}
+    for tag in (tag_a, tag_b):
+        det_items = _detection_items(adapter, want_tags=[tag])
+        img_items = _image_items(adapter, want_tags=[tag])
+        ln = label_noise(adapter, cfg, want_tags=[tag]) if len(det_items) >= 2 else {"issues": []}
+        dups = near_duplicate_groups(img_items, max_distance) if img_items else []
+        out["per_tag"][tag] = {
+            "n_samples": len(img_items),
+            "n_detections": len(det_items),
+            "n_label_issues": len(ln["issues"]),
+            "noise_pct": round(100 * len(ln["issues"]) / max(1, len(det_items)), 1),
+            "dup_groups": len(dups),
+            "redundant": sum(len(g) - 1 for g in dups),
+        }
+        embs[tag] = (
+            _l2norm(np.vstack([np.asarray(it.embedding, float) for it in img_items]))
+            if img_items
+            else np.zeros((0, 1))
+        )
+    A, B = embs[tag_a], embs[tag_b]
+    if A.size and B.size and A.shape[1] == B.shape[1]:
+        nearest = (B @ A.T).max(axis=1)  # cosine sim of each B image to its closest A image
+        out["cross_recycled"] = int((1.0 - nearest <= max_distance).sum())
+    DecisionLog(cfg.decision_log_path).append(
+        "compare", decision=f"{tag_a}|{tag_b}", extra={**out["per_tag"], "cross_recycled": out["cross_recycled"]}
+    )
+    log.info("compare %s vs %s -> %s (cross_recycled=%d)", tag_a, tag_b, out["per_tag"], out["cross_recycled"])
+    return out
 
 
 def drift_type(adapter, cfg, tag_a, tag_b):  # concept #3

@@ -23,6 +23,7 @@ def pre_train_gate(
     golden_train_overlap: int = 0,
     under_represented: list[str] | None = None,
     drift_triggered: bool = False,
+    audit_chain_intact: bool = True,
 ) -> GateResult:
     under_represented = under_represented or []
     reasons: list[str] = []
@@ -34,6 +35,8 @@ def pre_train_gate(
         reasons.append(f"類別樣本不足: {under_represented}")
     if drift_triggered:
         reasons.append("偵測到未解決的定義漂移")
+    if not audit_chain_intact:
+        reasons.append("稽核鏈損毀(decision log 不可信,無法保證來源可追溯)")
     return GateResult(
         verdict="GO" if not reasons else "NO-GO",
         reasons=reasons,
@@ -42,6 +45,7 @@ def pre_train_gate(
             "golden_train_overlap": golden_train_overlap,
             "under_represented": under_represented,
             "drift_triggered": drift_triggered,
+            "audit_chain_intact": audit_chain_intact,
         },
     )
 

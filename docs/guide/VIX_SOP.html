@@ -93,6 +93,7 @@
   <h2>實戰 &amp; 附錄</h2>
   <a href="#scenario">C. 標準情境 SOP</a>
   <a href="#explore">D. 探索更多 / 排解</a>
+  <a href="#limits">E. 限制與誠實聲明</a>
   <a href="#appendix">附錄:CLI 全指令 <span class="r">參考</span></a>
 </nav>
 
@@ -130,7 +131,7 @@
   <tr><td><b>「這張該不該覆核?為什麼?」</b></td><td>❌ 沒有</td><td>✅ 雙軸路由 → pass/review + 白話 <code>flag_reason</code></td></tr>
   <tr><td>golden/anchor/review 生命週期</td><td>❌</td><td>✅ 含 append-only 雜湊鏈稽核帳本</td></tr>
   <tr><td>資料品質演算法</td><td>❌</td><td>✅ 標籤錯誤、近重複、覆蓋缺口、漂移、校準、SPC、成本門檻、訓練前 gate…</td></tr>
-  <tr><td>工作流 CLI</td><td>FiftyOne 有自己的 CLI</td><td>✅ <code>vix</code> 47 個子指令(一條龍)</td></tr>
+  <tr><td>工作流 CLI</td><td>FiftyOne 有自己的 CLI</td><td>✅ <code>vix</code> 48 個子指令(一條龍)</td></tr>
   <tr><td>App 內客製按鈕</td><td>提供插件系統</td><td>✅ <code>@vix/review</code> 三個 operator</td></tr>
 </table>
 <div class="tip"><b>一句話:</b>你在 App 裡看到的格狀、Embeddings、套索框選 = FiftyOne 原生;
@@ -396,18 +397,29 @@ vix routing-diff           # 最近兩次路由之間有什麼改變</code></pre
 </table>
 
 <!-- ============ Appendix ============ -->
-<h2 class="sec" id="appendix">附錄:CLI 全指令(47) <span class="tag vix">VIX 客製</span></h2>
-<p>執行 <code>vix --help</code> 取得最新清單。v0.1 共 <b>47</b> 個子指令:</p>
+<h2 class="sec" id="appendix">附錄:CLI 全指令(48) <span class="tag vix">VIX 客製</span></h2>
+<p>執行 <code>vix --help</code> 取得最新清單。v0.1 共 <b>48</b> 個子指令:</p>
 <ul>
   <li><b>資料流</b>:<code>ingest · infer · embed · calibrate · route · export · run</code></li>
   <li><b>覆核 / 把關</b>:<code>review-queue · gate · dismiss · resolve · sync-reviews · report · app</code></li>
-  <li><b>診斷</b>:<code>audit-labels · dedup · coverage · drift · drift-type · label-noise · leakage · harmful · new-classes · spc · trend · parity · reviewer-audit · geometry · fp-rate · value · active-learn · explain</code></li>
+  <li><b>診斷</b>:<code>audit-labels · dedup · coverage · drift · drift-type · compare · label-noise · leakage · harmful · new-classes · spc · trend · parity · reviewer-audit · geometry · fp-rate · value · active-learn · explain</code></li>
   <li><b>版本 / 稽核</b>:<code>snapshot · restore · history · audit · routing-diff · relabel · merge · merge-preview</code></li>
   <li><b>校準 / 進階</b>:<code>calibrate-confidence · cost-gate · guard</code></li>
   <li><b>匯出完整性</b>:<code>verify</code>(比對收到的資料集 vs 匯出清單)</li>
   <li><b>驗收(Tier-2)</b>:<code>verify-fiftyone · verify-gui</code></li>
   <li><b>探索 / 說明</b>:<code>quickstart</code></li>
 </ul>
+
+<h2 class="sec" id="limits">E. 限制與誠實聲明(務必知道工具「不能」做什麼)</h2>
+<div class="warn">
+  <ul>
+    <li><b>覆核員稽核只量「自我一致性」</b>:<code>reviewer-audit</code> 能抓「同一人對近乎相同的樣本給相反決策」,但<b>無法證明某次「確認」是否真的有人看過</b>。橡皮圖章若每次都給一致答案,統計上抓不到 — 它是線索不是鐵證。</li>
+    <li><b>漂移以 embedding / 幾何為訊號</b>:<code>drift-type</code>/<code>guard</code> 偵測特徵與框幾何的變化。若攝影機只換了<b>解析度/檔案格式但視覺外觀一致</b>,embedding 可能不變而不觸發 — 請搭配 <code>geometry</code> 與來源端 metadata 檢查。</li>
+    <li><b>移除只作用在「下游使用」,不擦除來源/歷史</b>:<code>dismiss</code>/<code>harmful --remove</code> 會讓樣本<b>排除於覆核佇列與匯出</b>(已驗證:rejected 不進 <code>export</code>),但<b>不會刪除原始資料夾的檔案,也不會改寫既有快照</b>。PII 合規移除後,含該 <code>vix_hash</code> 的舊快照需<b>重新切版</b>。</li>
+    <li><b>部分品質指標為「triage 啟發式」而非統計保證</b>:<code>label-noise</code> 以 embedding kNN 多數票當偽標籤、<code>parity</code> 以平均信心當代理 — 適合「優先排序該看哪些」,<b>不應當作嚴格的標籤錯誤率 / 效能顯著性</b>。門檻(漂移、半徑)為可調啟發參數。</li>
+    <li><b>離線乾跑(<code>--adapter memory</code>)用像素特徵</b>:標記為 <code>pixel_fallback</code>,品質低於真實 DINOv2;適合流程驗證與 onboarding,正式判定請用 FiftyOne 後端 + 真實權重。</li>
+  </ul>
+</div>
 
 <footer>
   VIX v0.1 · Vision Integrity eXplainability · 本手冊截圖皆取自本機實際執行的 FiftyOne App。<br>

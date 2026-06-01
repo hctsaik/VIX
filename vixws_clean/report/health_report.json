@@ -1,0 +1,22 @@
+{
+  "version": "current",
+  "generated_at": "2026-06-01T19:31:10.188696+00:00",
+  "total_images": 19,
+  "class_distribution": {
+    "vert": 8,
+    "horiz": 8
+  },
+  "duplicate_rate": 0.7368421052631579,
+  "n_duplicate_groups": 2,
+  "review_ratio": 1.0,
+  "n_suspected_label_errors": 0,
+  "under_represented_classes": [],
+  "novel_fraction": null,
+  "quality_score": 57.9,
+  "gate_verdict": "NO-GO",
+  "embedding_backend": "pixel_fallback",
+  "n_batches": 0,
+  "suggested_next_steps": [
+    "處理 2 群近似重複(vix dedup)"
+  ]
+}
