@@ -44,9 +44,11 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install (core + FiftyOne + Playwright)
+        # 鎖到本機實測 known-good 版本,避免「抓最新」造成的版本漂移失敗。
+        # 與 requirements-tier2.txt 對齊;verify-* 用 pixel_fallback,不需 torch。
         run: |
           pip install -e .
-          pip install fiftyone playwright
+          pip install "fiftyone==1.16.0" "playwright==1.60.0"
           playwright install --with-deps chromium
       - name: verify-fiftyone（headless:adapter 全鏈 + sync_reviews 回寫閉環）
         run: vix --workspace ./vixws verify-fiftyone
