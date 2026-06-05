@@ -136,7 +136,24 @@ class DecisionLog:
                 f.write(_canonical(rec) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
+            # monotonic high-watermark anchor so tail-truncation (dropping the last N records,
+            # which leaves a valid shorter chain) is detectable by is_truncated().
+            hwm = self.path.with_suffix(self.path.suffix + ".hwm")
+            try:
+                prev = json.loads(hwm.read_text(encoding="utf-8")).get("count", 0)
+            except Exception:  # noqa: BLE001
+                prev = 0
+            hwm.write_text(json.dumps({"count": prev + 1, "tip": rec["entry_hash"]}), encoding="utf-8")
         return rec
+
+    def is_truncated(self) -> bool:
+        """True if records were dropped from the tail since the last append (vs the hwm anchor)."""
+        hwm = self.path.with_suffix(self.path.suffix + ".hwm")
+        try:
+            anchor = json.loads(hwm.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - no watermark -> cannot assert truncation
+            return False
+        return len(self.read_all()) < int(anchor.get("count", 0))
 
     def read_all(self) -> list[dict]:
         return list(self._iter_records())

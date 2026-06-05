@@ -56,6 +56,14 @@ VIX 快速上手(5 分鐘)
 """
 
 
+def _load_json_arg(s: str):
+    """Accept either a path to a JSON file (BOM-tolerant) or an inline JSON string."""
+    p = Path(s)
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8-sig"))
+    return json.loads(s)  # inline JSON (e.g. quoted from PowerShell)
+
+
 def make_adapter(cfg: Config, kind: str):
     if kind == "auto":
         try:
@@ -427,6 +435,7 @@ def _main(argv: list[str] | None = None) -> int:
             mapping = dict(m.split("=", 1) for m in (args.map or []))
             diff = pipeline.relabel_dataset(adapter, cfg, mapping)
             print(f"relabel: {diff['total_changed']} changed | {diff['by_transition']}")
+            print("注:relabel 僅保證機械式一致與可回滾(relabel --rollback),不保證新定義語意正確;請以 vix audit-labels 複查")
 
     elif args.cmd == "run":
         s = pipeline.run_pipeline(adapter, cfg, input_folder=args.input, batch_id=args.batch,
@@ -467,8 +476,8 @@ def _main(argv: list[str] | None = None) -> int:
         if args.tag_a and args.tag_b:
             merged = pipeline.merge_preview_tags(adapter, cfg, args.tag_a, args.tag_b, overrides)
         elif args.counts_a and args.counts_b:
-            counts_a = json.loads(Path(args.counts_a).read_text(encoding="utf-8-sig"))
-            counts_b = json.loads(Path(args.counts_b).read_text(encoding="utf-8-sig"))
+            counts_a = _load_json_arg(args.counts_a)
+            counts_b = _load_json_arg(args.counts_b)
             merged = pipeline.merge_preview(counts_a, counts_b, overrides)
         else:
             raise SystemExit("provide either --tag-a/--tag-b or --counts-a/--counts-b")

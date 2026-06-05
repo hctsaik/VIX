@@ -467,7 +467,8 @@ def health_report(adapter, cfg, out_dir, version="current", prev=None):  # S10
 def review_queue(adapter, cfg, top=50):  # T3 + T7
     cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.REJECTED])
     ref = _image_items(adapter, want_tags=[Tag.GOLDEN])
-    ranked = _review_queue(cands, ref, k=cfg.knn_k)[:top]
+    label_issue_ids = {i.id.split(":")[0] for i in audit_labels(adapter, cfg)}  # AJ2/AJ6: activate label-error risk
+    ranked = _review_queue(cands, ref, k=cfg.knn_k, label_issue_ids=label_issue_ids)[:top]
     log.info("review_queue: %d candidates ranked, returning top %d", len(cands), len(ranked))
     return [
         {"id": r.id, "risk": r.risk, "reasons": r.reasons, "why": explain(r.reasons, r.scores)}
@@ -622,8 +623,9 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     overlap = sum(
         1 for g in cross_split_leakage(items) if {"golden", "train"} <= set(g["splits"])
     )
-    dlog_all = DecisionLog(cfg.decision_log_path).read_all()
-    audit_ok = DecisionLog(cfg.decision_log_path).verify_chain()  # a tampered ledger -> NO-GO
+    _dl = DecisionLog(cfg.decision_log_path)
+    dlog_all = _dl.read_all()
+    audit_ok = _dl.verify_chain() and not _dl.is_truncated()  # tampered OR tail-truncated ledger -> NO-GO
     backends = {r.get("extra", {}).get("embedding_backend") for r in dlog_all}
     backends.discard(None)
     backend_mixed = len(backends) > 1  # AI6: mixing pixel_fallback + DINOv2 makes thresholds/trends incomparable
