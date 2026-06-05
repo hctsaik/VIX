@@ -10,6 +10,11 @@ venv/
 # VIX runtime artifacts (DVC-tracked in real deployments, not committed here)
 /vix_workspace/
 /vixws/
+/vixws_clean/
+/vixws*/
+/jdg_data/
+/*_ws/
+golden_*.txt
 *.log
 *.npz
 *.npy
