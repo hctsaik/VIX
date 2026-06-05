@@ -1,0 +1,5 @@
+path: C:\code\claude\VIX\jdg_export
+train: images/train
+val: images/train
+names:
+  0: bridge

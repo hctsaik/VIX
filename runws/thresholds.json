@@ -1,0 +1,27 @@
+{
+  "meta": {
+    "calibrated_at": "2026-06-05T23:51:24.270645+00:00",
+    "conf_pct": 5.0,
+    "dist_pct": 95.0,
+    "ref_snapshot": "runws\\manifest.jsonl",
+    "basis": "golden/training embedding distribution",
+    "embedding_backend": "pixel_fallback"
+  },
+  "thresholds": {
+    "car": {
+      "conf_thr": 0.5,
+      "dist_thr": 0.0018647771819513242,
+      "n_support": 9
+    },
+    "bridge": {
+      "conf_thr": 0.5,
+      "dist_thr": 0.008834502162446417,
+      "n_support": 9
+    },
+    "dog": {
+      "conf_thr": 0.5,
+      "dist_thr": 0.01391798681862907,
+      "n_support": 9
+    }
+  }
+}

@@ -174,7 +174,9 @@ def coverage_gaps(
             dens = np.array([np.partition(d[i], kk - 1)[:kk].mean() for i in range(len(group))])
             thr = float(np.quantile(dens, sparse_quantile))
             sparse_ids = [group[i].id for i in range(len(group)) if dens[i] >= thr]
-        under = counts[c] < 0.5 * median
+        # explicit --target: under = below the absolute target (even if classes are balanced);
+        # default (no target): the relative-imbalance heuristic vs the median class size.
+        under = counts[c] < tgt if target is not None else counts[c] < 0.5 * median
         out[c] = {
             "count": counts[c],
             "under_represented": under,

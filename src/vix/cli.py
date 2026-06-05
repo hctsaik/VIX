@@ -632,9 +632,11 @@ def _main(argv: list[str] | None = None) -> int:
         r = pipeline.pre_train_gate_stage(adapter, cfg)
         from .core.decision_log import DecisionLog
 
-        verified = DecisionLog(cfg.decision_log_path).verify_chain()
+        dl = DecisionLog(cfg.decision_log_path)
+        chain_ok, truncated = dl.verify_chain(), dl.is_truncated()
         print(f"{r.verdict}: {r.reasons or 'all checks passed'}")
-        print(f"audit hash-chain verified: {verified}")
+        print(f"audit integrity: 鏈結={'OK' if chain_ok else 'FAIL'}  "
+              f"尾端錨點={'FAIL(偵測到截斷)' if truncated else 'OK'}")
         return 0 if r.verdict == "GO" else 2
 
     elif args.cmd == "explain":

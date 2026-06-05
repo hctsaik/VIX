@@ -1,0 +1,19 @@
+{
+  "version": "current",
+  "generated_at": "2026-06-05T23:51:11.318144+00:00",
+  "total_images": 12,
+  "class_distribution": {},
+  "duplicate_rate": 0.0,
+  "n_duplicate_groups": 0,
+  "review_ratio": 1.0,
+  "n_suspected_label_errors": 0,
+  "under_represented_classes": [],
+  "novel_fraction": null,
+  "quality_score": 80.0,
+  "gate_verdict": "NO-GO",
+  "embedding_backend": "pixel_fallback",
+  "n_batches": 0,
+  "suggested_next_steps": [
+    "資料集健康,可直接 vix export 進訓練"
+  ]
+}

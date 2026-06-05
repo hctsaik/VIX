@@ -147,13 +147,20 @@ class DecisionLog:
         return rec
 
     def is_truncated(self) -> bool:
-        """True if records were dropped from the tail since the last append (vs the hwm anchor)."""
+        """True if records were dropped from the tail (vs the .hwm anchor). Fail-closed: a
+        non-empty ledger whose .hwm is missing/unreadable is treated as suspicious.
+
+        NOTE: the .hwm sidecar defends against accidental/naive truncation, NOT an adversary
+        with filesystem write access (who could also rewrite .hwm) — pair with an external
+        immutable snapshot anchor for that threat model.
+        """
+        n = len(self.read_all())
         hwm = self.path.with_suffix(self.path.suffix + ".hwm")
         try:
             anchor = json.loads(hwm.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - no watermark -> cannot assert truncation
-            return False
-        return len(self.read_all()) < int(anchor.get("count", 0))
+        except Exception:  # noqa: BLE001
+            return n > 0  # non-empty ledger but no/unreadable watermark -> suspicious
+        return n < int(anchor.get("count", 0))
 
     def read_all(self) -> list[dict]:
         return list(self._iter_records())

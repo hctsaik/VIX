@@ -1,0 +1,33 @@
+{
+  "version": "current",
+  "generated_at": "2026-06-05T23:51:24.343505+00:00",
+  "total_images": 39,
+  "class_distribution": {
+    "bridge": 9,
+    "car": 9,
+    "dog": 9
+  },
+  "duplicate_rate": 0.6666666666666666,
+  "n_duplicate_groups": 1,
+  "review_ratio": 1.0,
+  "n_suspected_label_errors": 18,
+  "under_represented_classes": [],
+  "novel_fraction": null,
+  "quality_score": 46.2,
+  "gate_verdict": "NO-GO",
+  "embedding_backend": "pixel_fallback",
+  "n_batches": 0,
+  "suggested_next_steps": [
+    "本週首要(triage 排序,非實測 mAP): 覆核疑似標錯 18 筆(vix audit-labels)",
+    "處理 1 群近似重複(vix dedup)"
+  ],
+  "diff": {
+    "total_delta": 27,
+    "new_classes": [
+      "bridge",
+      "car",
+      "dog"
+    ],
+    "removed_classes": []
+  }
+}
