@@ -210,6 +210,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sst.add_argument("--dist", type=float, default=None, help="flag far_from_known above this distance")
     sub.add_parser("reasons", help="management summary: review/rejected grouped by plain-language reason")
     sub.add_parser("throughput", help="review turnaround (median/p90) + rough remaining effort from the audit log")
+    scap = sub.add_parser("capacity", help="rough reviewer-hours plan: history x expected volume (estimate, not SLA)")
+    scap.add_argument("--volume", type=int, default=0, help="expected incoming images next period")
     ssp = sub.add_parser("spc", help="SPC EWMA/CUSUM leading indicator on per-batch review-rate (#4)")
     ssp.add_argument("--method", choices=["ewma", "cusum"], default="ewma")
     ssp.add_argument("--target", type=float, default=None)
@@ -287,6 +289,8 @@ def _main(argv: list[str] | None = None) -> int:
             tags.append(Tag.EVAL)
         n_new, n_skipped = pipeline.ingest(adapter, cfg, args.folder, args.batch, tags=tags)
         print(f"ingested {n_new} new images, skipped {n_skipped} (already present)")
+        if n_skipped:
+            print("注:既有雜湊的影像本批未重新採用其標籤(以首次為準);如需更正用 resolve --confirm --label")
 
     elif args.cmd == "infer":
         from .detect import run_yolo
@@ -308,6 +312,8 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"routed: {counts['pass']} pass, {counts['review']} review")
         if counts.get("warning"):
             print(f"⚠️ {counts['warning']}")
+        if counts.get("backend_mismatch"):
+            print("⚠️ 校準與目前 embedding 後端不一致;距離門檻不可靠,請以同一後端重新 calibrate")
 
     elif args.cmd == "guard":
         if args.build:
@@ -441,6 +447,8 @@ def _main(argv: list[str] | None = None) -> int:
         for c in d["changed"]:
             print(f"{c['id']}: {c['from']} -> {c['to']}")
         print(d.get("note") or f"{d['n_changed']} decisions changed")
+        if d.get("added") or d.get("removed"):
+            print(f"  新增 {len(d.get('added', []))} 筆、消失 {len(d.get('removed', []))} 筆")
 
     elif args.cmd == "dismiss":
         n = pipeline.dismiss(adapter, cfg, args.ids)
@@ -533,6 +541,16 @@ def _main(argv: list[str] | None = None) -> int:
         else:
             print(f"已解決 {r['n_resolved']} 筆:週轉中位數 {r['median_hours']:.1f}h、p90 {r['p90_hours']:.1f}h")
             print(f"待覆核 {r['n_open']} 筆 -> 估計約 {r['est_remaining_hours']:.1f} 人時(中位數×待辦,為估計非 SLA 保證)")
+
+    elif args.cmd == "capacity":
+        r = pipeline.capacity(cfg, volume=args.volume)
+        m = f"{r['median_hours']:.1f}h" if r["median_hours"] is not None else "—"
+        print(f"歷史 flag_rate={r['flag_rate']:.1%}  週轉中位數={m}  待覆核={r['n_open']}")
+        if r["total_hours"] is not None:
+            print(f"預估:積壓 {r['backlog_hours']:.1f}h + 新進 {args.volume}×{r['flag_rate']:.1%}={r['projected_review']} 筆 "
+                  f"= 約 {r['total_hours']:.1f} 人時(估計,非 SLA 保證)")
+        else:
+            print("尚無足夠歷史(需已解決的覆核紀錄)來估算工時")
 
     elif args.cmd == "spc":
         series = pipeline.review_rate_series(adapter, cfg)

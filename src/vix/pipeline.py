@@ -119,6 +119,7 @@ def calibrate(adapter: DatasetAdapter, cfg: Config) -> ThresholdPolicy:
         cfg.dist_percentile,
         ref_snapshot=str(cfg.manifest_path),
     )
+    policy.meta["embedding_backend"] = cfg.embedding_backend  # AI6: so route/gate can catch a backend mismatch
     policy.save(cfg.thresholds_path)
     log.info("calibrate: %d classes -> %s", len(policy.thresholds), cfg.thresholds_path)
     return policy
@@ -126,6 +127,11 @@ def calibrate(adapter: DatasetAdapter, cfg: Config) -> ThresholdPolicy:
 
 def route(adapter: DatasetAdapter, cfg: Config, policy: ThresholdPolicy | None = None) -> dict:
     policy = policy or ThresholdPolicy.load(cfg.thresholds_path)
+    cal_backend = policy.meta.get("embedding_backend")  # AI6: distance thresholds are backend-specific
+    backend_mismatch = bool(cal_backend) and cal_backend != cfg.embedding_backend
+    if backend_mismatch:
+        log.warning("route: 校準後端(%s)≠ 目前後端(%s);距離門檻不可靠,請以同一後端重新 calibrate",
+                    cal_backend, cfg.embedding_backend)
     scorer = OutlierScorer(_emb_by_class(adapter, {Tag.GOLDEN}), k=cfg.knn_k)
     dlog = DecisionLog(cfg.decision_log_path)
     counts = {Routing.PASS: 0, Routing.REVIEW: 0}
@@ -189,6 +195,7 @@ def route(adapter: DatasetAdapter, cfg: Config, policy: ThresholdPolicy | None =
         log.warning("route: %s", warning)
     counts["flag_rate"] = round(flag_rate, 3)
     counts["warning"] = warning
+    counts["backend_mismatch"] = backend_mismatch
     log.info("route: %d pass, %d review (flag_rate=%.2f)",
              counts[Routing.PASS], counts[Routing.REVIEW], flag_rate)
     return counts
@@ -615,11 +622,16 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     overlap = sum(
         1 for g in cross_split_leakage(items) if {"golden", "train"} <= set(g["splits"])
     )
+    dlog_all = DecisionLog(cfg.decision_log_path).read_all()
     audit_ok = DecisionLog(cfg.decision_log_path).verify_chain()  # a tampered ledger -> NO-GO
+    backends = {r.get("extra", {}).get("embedding_backend") for r in dlog_all}
+    backends.discard(None)
+    backend_mixed = len(backends) > 1  # AI6: mixing pixel_fallback + DINOv2 makes thresholds/trends incomparable
     result = pre_train_gate(
         n_review_open=n_review, golden_train_overlap=overlap,
         under_represented=under, drift_triggered=drift_triggered,
         audit_chain_intact=audit_ok, n_golden=n_golden, eval_golden_overlap=eval_golden_overlap,
+        backend_mixed=backend_mixed,
     )
     DecisionLog(cfg.decision_log_path).append(
         "pre_train_gate", decision=result.verdict, extra={"reasons": result.reasons}
@@ -717,8 +729,10 @@ def routing_diff(cfg):  # V4 before/after routing diff
     p = json.loads(prev.read_text(encoding="utf-8"))
     c = json.loads(cur.read_text(encoding="utf-8"))
     changed = [{"id": k, "from": p[k], "to": c[k]} for k in c if k in p and p[k] != c[k]]
-    log.info("routing_diff: %d decisions changed", len(changed))
-    return {"changed": changed, "n_changed": len(changed)}
+    added = [k for k in c if k not in p]      # AI1: also surface samples that appeared/disappeared
+    removed = [k for k in p if k not in c]
+    log.info("routing_diff: %d changed, %d added, %d removed", len(changed), len(added), len(removed))
+    return {"changed": changed, "n_changed": len(changed), "added": added, "removed": removed}
 
 
 def dismiss(adapter, cfg, ids):  # V6 mark false alarms; excluded from future review queue
@@ -803,6 +817,21 @@ def throughput(cfg):  # AH8 review turnaround + rough effort estimate from the a
     log.info("throughput: %d resolved, median=%s h, %d open", len(durations), median, n_open)
     return {"n_resolved": len(durations), "median_hours": median, "p90_hours": p90,
             "n_open": n_open, "est_remaining_hours": est}
+
+
+def capacity(cfg, volume=0):  # AI9 rough reviewer-hours plan from history x expected volume (estimate, not SLA)
+    tp = throughput(cfg)
+    recs = DecisionLog(cfg.decision_log_path).read_all()
+    routed = sum(1 for r in recs if r.get("event") == "route")
+    flagged = sum(1 for r in recs if r.get("event") == "route" and r.get("decision") == "review")
+    flag_rate = flagged / routed if routed else 0.0
+    median = tp["median_hours"]
+    projected_review = int(volume * flag_rate)
+    incoming_hours = (projected_review * median) if median is not None else None
+    total = (tp["est_remaining_hours"] + incoming_hours) if (tp["est_remaining_hours"] is not None and incoming_hours is not None) else None
+    return {"flag_rate": round(flag_rate, 3), "median_hours": median, "n_open": tp["n_open"],
+            "backlog_hours": tp["est_remaining_hours"], "projected_review": projected_review,
+            "incoming_hours": incoming_hours, "total_hours": total}
 
 
 def relabel_rollback(adapter, cfg, change_log_path=None):  # V7 rollback via change log

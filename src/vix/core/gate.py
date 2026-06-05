@@ -26,6 +26,7 @@ def pre_train_gate(
     audit_chain_intact: bool = True,
     n_golden: int | None = None,
     eval_golden_overlap: int = 0,
+    backend_mixed: bool = False,
 ) -> GateResult:
     under_represented = under_represented or []
     reasons: list[str] = []
@@ -33,6 +34,8 @@ def pre_train_gate(
         reasons.append("尚無已確認 golden 資料,無法訓練(先 vix ingest --golden 並 calibrate)")
     if eval_golden_overlap > 0:
         reasons.append(f"eval 與 golden 重疊 {eval_golden_overlap} 筆(held-out 評估集洩漏進訓練)")
+    if backend_mixed:
+        reasons.append("偵測到混用 embedding 後端(pixel_fallback 與 DINOv2),距離門檻/趨勢不可比")
     if n_review_open > 0:
         reasons.append(f"{n_review_open} 筆仍待覆核未回寫")
     if golden_train_overlap > 0:
