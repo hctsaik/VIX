@@ -89,7 +89,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("folder")
     sp.add_argument("--batch", required=True)
     sp.add_argument("--golden", action="store_true", help="tag as golden set")
-    sp.add_argument("--anchor", action="store_true", help="tag as frozen anchor set")
+    sp.add_argument("--anchor", action="store_true", help="tag as frozen anchor set (drift reference)")
+    sp.add_argument("--eval", dest="is_eval", action="store_true",
+                    help="tag as held-out eval/regression set (never calibrated/routed/exported on)")
 
     sub.add_parser("infer", help="run YOLO -> detections").add_argument("--weights", required=True)
     sub.add_parser("embed", help="DINOv2 embeddings + kNN index")
@@ -207,6 +209,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sst.add_argument("--conf", type=float, default=None, help="flag low_conf below this confidence")
     sst.add_argument("--dist", type=float, default=None, help="flag far_from_known above this distance")
     sub.add_parser("reasons", help="management summary: review/rejected grouped by plain-language reason")
+    sub.add_parser("throughput", help="review turnaround (median/p90) + rough remaining effort from the audit log")
     ssp = sub.add_parser("spc", help="SPC EWMA/CUSUM leading indicator on per-batch review-rate (#4)")
     ssp.add_argument("--method", choices=["ewma", "cusum"], default="ewma")
     ssp.add_argument("--target", type=float, default=None)
@@ -280,6 +283,8 @@ def _main(argv: list[str] | None = None) -> int:
             tags.append(Tag.GOLDEN)
         if args.anchor:
             tags.append(Tag.ANCHOR)
+        if args.is_eval:
+            tags.append(Tag.EVAL)
         n_new, n_skipped = pipeline.ingest(adapter, cfg, args.folder, args.batch, tags=tags)
         print(f"ingested {n_new} new images, skipped {n_skipped} (already present)")
 
@@ -393,8 +398,8 @@ def _main(argv: list[str] | None = None) -> int:
         if args.tag_a and args.tag_b:
             res = pipeline.merge_datasets(adapter, cfg, args.tag_a, args.tag_b, overrides)
         elif args.map_a and args.map_b:
-            map_a = {int(k): v for k, v in json.loads(Path(args.map_a).read_text(encoding="utf-8")).items()}
-            map_b = {int(k): v for k, v in json.loads(Path(args.map_b).read_text(encoding="utf-8")).items()}
+            map_a = {int(k): v for k, v in json.loads(Path(args.map_a).read_text(encoding="utf-8-sig")).items()}
+            map_b = {int(k): v for k, v in json.loads(Path(args.map_b).read_text(encoding="utf-8-sig")).items()}
             res = pipeline.merge_maps(map_a, map_b, overrides)
         else:
             raise SystemExit("provide either --tag-a/--tag-b or --map-a/--map-b")
@@ -454,8 +459,8 @@ def _main(argv: list[str] | None = None) -> int:
         if args.tag_a and args.tag_b:
             merged = pipeline.merge_preview_tags(adapter, cfg, args.tag_a, args.tag_b, overrides)
         elif args.counts_a and args.counts_b:
-            counts_a = json.loads(Path(args.counts_a).read_text(encoding="utf-8"))
-            counts_b = json.loads(Path(args.counts_b).read_text(encoding="utf-8"))
+            counts_a = json.loads(Path(args.counts_a).read_text(encoding="utf-8-sig"))
+            counts_b = json.loads(Path(args.counts_b).read_text(encoding="utf-8-sig"))
             merged = pipeline.merge_preview(counts_a, counts_b, overrides)
         else:
             raise SystemExit("provide either --tag-a/--tag-b or --counts-a/--counts-b")
@@ -477,7 +482,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"synced {n} review decisions from the App")
 
     elif args.cmd == "calibrate-confidence":
-        rows = [json.loads(line) for line in Path(args.eval).read_text(encoding="utf-8").splitlines() if line.strip()]
+        rows = [json.loads(line) for line in Path(args.eval).read_text(encoding="utf-8-sig").splitlines() if line.strip()]
         res = pipeline.calibrate_confidence([r["conf"] for r in rows], [r["correct"] for r in rows], cfg)
         print(f"temperature={res['temperature']}  ECE {res['ece_before']} -> {res['ece_after']}")
 
@@ -518,6 +523,16 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"覆核總數={r['n_review']}  已排除(誤報/移除)={r['rejected']}")
         for reason, n in sorted(r["by_reason"].items(), key=lambda kv: -kv[1]):
             print(f"  {label.get(reason, reason)}: {n}")
+        if "no_detection" in r["by_reason"]:
+            print("注:「無偵測」一律送覆核;系統無法區分『真的沒有物件』與『模型漏報』,需人工確認")
+
+    elif args.cmd == "throughput":
+        r = pipeline.throughput(cfg)
+        if r["median_hours"] is None:
+            print(f"尚無已解決的覆核紀錄;目前待覆核 {r['n_open']} 筆")
+        else:
+            print(f"已解決 {r['n_resolved']} 筆:週轉中位數 {r['median_hours']:.1f}h、p90 {r['p90_hours']:.1f}h")
+            print(f"待覆核 {r['n_open']} 筆 -> 估計約 {r['est_remaining_hours']:.1f} 人時(中位數×待辦,為估計非 SLA 保證)")
 
     elif args.cmd == "spc":
         series = pipeline.review_rate_series(adapter, cfg)

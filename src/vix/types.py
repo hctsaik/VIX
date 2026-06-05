@@ -31,6 +31,7 @@ class Tag:
     PASS = "pass"
     ANCHOR = "anchor"
     REJECTED = "rejected"
+    EVAL = "eval"  # held-out evaluation/regression set: never calibrated/routed/exported on
 
 
 @dataclass

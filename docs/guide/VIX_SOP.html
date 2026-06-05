@@ -131,7 +131,7 @@
   <tr><td><b>「這張該不該覆核?為什麼?」</b></td><td>❌ 沒有</td><td>✅ 雙軸路由 → pass/review + 白話 <code>flag_reason</code></td></tr>
   <tr><td>golden/anchor/review 生命週期</td><td>❌</td><td>✅ 含 append-only 雜湊鏈稽核帳本</td></tr>
   <tr><td>資料品質演算法</td><td>❌</td><td>✅ 標籤錯誤、近重複、覆蓋缺口、漂移、校準、SPC、成本門檻、訓練前 gate…</td></tr>
-  <tr><td>工作流 CLI</td><td>FiftyOne 有自己的 CLI</td><td>✅ <code>vix</code> 48 個子指令(一條龍)</td></tr>
+  <tr><td>工作流 CLI</td><td>FiftyOne 有自己的 CLI</td><td>✅ <code>vix</code> 51 個子指令(一條龍)</td></tr>
   <tr><td>App 內客製按鈕</td><td>提供插件系統</td><td>✅ <code>@vix/review</code> 三個 operator</td></tr>
 </table>
 <div class="tip"><b>一句話:</b>你在 App 裡看到的格狀、Embeddings、套索框選 = FiftyOne 原生;
@@ -397,8 +397,8 @@ vix routing-diff           # 最近兩次路由之間有什麼改變</code></pre
 </table>
 
 <!-- ============ Appendix ============ -->
-<h2 class="sec" id="appendix">附錄:CLI 全指令(48) <span class="tag vix">VIX 客製</span></h2>
-<p>執行 <code>vix --help</code> 取得最新清單。v0.1 共 <b>48</b> 個子指令:</p>
+<h2 class="sec" id="appendix">附錄:CLI 全指令(51) <span class="tag vix">VIX 客製</span></h2>
+<p>執行 <code>vix --help</code> 取得最新清單。v0.1 共 <b>51</b> 個子指令(含 <code>compare · set-threshold · reasons · throughput</code> 等近期新增):</p>
 <ul>
   <li><b>資料流</b>:<code>ingest · infer · embed · calibrate · route · export · run</code></li>
   <li><b>覆核 / 把關</b>:<code>review-queue · gate · dismiss · resolve · sync-reviews · report · app</code></li>
@@ -426,6 +426,8 @@ vix routing-diff           # 最近兩次路由之間有什麼改變</code></pre
     <li><b>無 SLA / 週轉時間指令</b>:帳本每筆都有 UTC <code>ts_utc</code>,可用 <code>audit --since/--until</code> 取 route 與 resolve 兩事件自行算週轉,但 VIX 不內建 SLA 儀表板;並用 <code>snapshot</code> 錨定以防尾端截斷。</li>
     <li><b>影像層分析為單標籤近似</b>:單圖多個重疊缺陷時,偵測層指令(<code>route</code>/<code>calibrate</code>/<code>set-threshold</code>/<code>label-noise</code>/<code>drift-type</code>)為逐類正確;但影像層指令(<code>dedup</code>/<code>coverage</code>/<code>harmful</code>/<code>review-queue</code>/影像 <code>parity</code>)會以第一個偵測標籤+平均特徵代表整張,屬粗略 triage,多標籤分析請用偵測層指令。</li>
     <li><b>跨期/跨站比較需同一 embedding 後端</b>:勿把 <code>pixel_fallback</code> 乾跑數字和真實 DINOv2 數字混在同一條趨勢比較。</li>
+    <li><b>held-out eval 用 <code>--eval</code> 標籤,別跟 <code>anchor</code> 混用</b>:<code>anchor</code> 是「漂移凍結參考」;<code>vix ingest --eval</code> 標的 eval 集會在 calibrate/route/export 一律硬排除,且 golden∧eval 互斥、<code>gate</code> 偵測到 eval∩golden 重疊會 NO-GO。</li>
+    <li><b>合併多個 workspace 無單一指令</b>:重新 ingest 各來源即可(manifest 以內容雜湊去重、不重複計);但三條 append-only <code>decision_log</code> hash-chain <b>無法串接成一條合法鏈</b> —— 舊帳本請各自保留為唯讀錨點,新 workspace 從新鏈開始。</li>
   </ul>
 </div>
 

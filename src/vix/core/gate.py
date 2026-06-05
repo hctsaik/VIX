@@ -25,11 +25,14 @@ def pre_train_gate(
     drift_triggered: bool = False,
     audit_chain_intact: bool = True,
     n_golden: int | None = None,
+    eval_golden_overlap: int = 0,
 ) -> GateResult:
     under_represented = under_represented or []
     reasons: list[str] = []
     if n_golden is not None and n_golden == 0:
         reasons.append("尚無已確認 golden 資料,無法訓練(先 vix ingest --golden 並 calibrate)")
+    if eval_golden_overlap > 0:
+        reasons.append(f"eval 與 golden 重疊 {eval_golden_overlap} 筆(held-out 評估集洩漏進訓練)")
     if n_review_open > 0:
         reasons.append(f"{n_review_open} 筆仍待覆核未回寫")
     if golden_train_overlap > 0:

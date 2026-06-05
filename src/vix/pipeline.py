@@ -82,6 +82,9 @@ def ingest(
     tags: list[str] | None = None,
 ) -> tuple[int, int]:
     cfg.ensure_dirs()
+    tags = tags or []
+    if Tag.GOLDEN in tags and Tag.EVAL in tags:  # held-out eval must never be trainable
+        raise ValueError("一個樣本不可同時是 golden 與 eval(eval 為 held-out 評估集,不可進訓練)")
     manifest = Manifest.load(cfg.manifest_path)
     folder = Path(folder)
     dlog = DecisionLog(cfg.decision_log_path)
@@ -129,8 +132,8 @@ def route(adapter: DatasetAdapter, cfg: Config, policy: ThresholdPolicy | None =
     decisions: dict[str, str] = {}
 
     for h, _src, dets, tags in adapter.samples():
-        if Tag.GOLDEN in tags or Tag.ANCHOR in tags:
-            continue  # never re-route reference data
+        if Tag.GOLDEN in tags or Tag.ANCHOR in tags or Tag.EVAL in tags:
+            continue  # never re-route reference / held-out eval data
         scores = scorer.score_image(dets)  # fills det.knn_dist / low_support
         reasons: set[str] = set()
         decision = Routing.PASS
@@ -165,7 +168,7 @@ def route(adapter: DatasetAdapter, cfg: Config, policy: ThresholdPolicy | None =
             decision=decision,
             scores={"conf_max": scores.conf_max, "knn_dist": scores.knn_dist},
             thr_version=policy.version,
-            extra={"reasons": sorted(reasons)},
+            extra={"reasons": sorted(reasons), "embedding_backend": cfg.embedding_backend},
         )
         counts[decision] += 1
 
@@ -254,7 +257,8 @@ def export(
     manifest = verify_mod.write_dir_manifest(dst)  # hashes images + labels + data.yaml (U8/V8)
     res["export_manifest"] = str(manifest)
     DecisionLog(cfg.decision_log_path).append(
-        "export", decision="golden", extra={"dst": str(dst), **res}
+        "export", decision="golden",
+        extra={"dst": str(dst), "embedding_backend": cfg.embedding_backend, **res},
     )
     log.info("export: %d images, %d labels -> %s", res["n_images"], res["n_labels"], dst)
     return res
@@ -416,15 +420,19 @@ def health_report(adapter, cfg, out_dir, version="current", prev=None):  # S10
     review_c = sum(1 for _h, _s, _d, t in rows if Tag.REVIEW in t)
     n_batches = len({_parse_meta(t)[0] for _h, _s, _d, t in rows} - {""})
 
-    suggestions = []
     under = [c for c, v in gaps.items() if v["under_represented"]]
+    ranked: list[tuple[int, str]] = []  # (magnitude, action) -> highest-impact first (AH3)
     if issues:
-        suggestions.append(f"覆核疑似標錯 {min(len(issues), 20)} 筆(vix audit-labels)")
+        ranked.append((len(issues), f"覆核疑似標錯 {min(len(issues), 20)} 筆(vix audit-labels)"))
     if dups:
-        suggestions.append(f"處理 {len(dups)} 群近似重複(vix dedup)")
+        ranked.append((len(dups), f"處理 {len(dups)} 群近似重複(vix dedup)"))
     if under:
-        suggestions.append(f"補採樣本不足的類別: {under}")
-    if not suggestions:
+        ranked.append((len(under), f"補採樣本不足的類別: {under}(vix coverage --target)"))
+    ranked.sort(key=lambda x: -x[0])
+    suggestions = [t for _n, t in ranked]
+    if suggestions:
+        suggestions[0] = "本週首要(triage 排序,非實測 mAP): " + suggestions[0]
+    else:
         suggestions.append("資料集健康,可直接 vix export 進訓練")
 
     gate_verdict = pre_train_gate(
@@ -592,6 +600,7 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     rows = list(adapter.samples())
     n_review = sum(1 for _h, _s, _d, t in rows if Tag.REVIEW in t)
     n_golden = sum(1 for _h, _s, _d, t in rows if Tag.GOLDEN in t)  # AF1: no golden -> NO-GO, not false GO
+    eval_golden_overlap = sum(1 for _h, _s, _d, t in rows if Tag.EVAL in t and Tag.GOLDEN in t)  # AH2 leak
     gaps = coverage_gaps(_detection_items(adapter, want_tags=[Tag.GOLDEN]), k=min(5, cfg.knn_k))
     under = [c for c, v in gaps.items() if v["under_represented"]]
 
@@ -610,7 +619,7 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     result = pre_train_gate(
         n_review_open=n_review, golden_train_overlap=overlap,
         under_represented=under, drift_triggered=drift_triggered,
-        audit_chain_intact=audit_ok, n_golden=n_golden,
+        audit_chain_intact=audit_ok, n_golden=n_golden, eval_golden_overlap=eval_golden_overlap,
     )
     DecisionLog(cfg.decision_log_path).append(
         "pre_train_gate", decision=result.verdict, extra={"reasons": result.reasons}
@@ -762,6 +771,38 @@ def reasons_breakdown(cfg):  # AE7 management summary: rejected/review grouped b
     rejected += sum(1 for r in recs if r.get("event") == "review" and r.get("decision") == "false_alarm")
     log.info("reasons_breakdown: %d review, %d rejected, %d reason types", n_review, rejected, len(by_reason))
     return {"n_review": n_review, "rejected": rejected, "by_reason": by_reason}
+
+
+def throughput(cfg):  # AH8 review turnaround + rough effort estimate from the audit log (not an SLA promise)
+    from datetime import datetime
+
+    recs = DecisionLog(cfg.decision_log_path).read_all()
+    routed_at: dict[str, str] = {}
+    resolved_at: dict[str, str] = {}
+    for r in recs:
+        h, ev, dec, ts = r.get("vix_hash"), r.get("event"), r.get("decision"), r.get("ts_utc")
+        if not h:
+            continue
+        if ev == "route" and dec == "review":
+            routed_at.setdefault(h, ts)
+        elif ev == "review":  # resolve_review closes a review item
+            resolved_at[h] = ts
+    durations = []
+    for h, rt in routed_at.items():
+        if h in resolved_at and rt and resolved_at[h]:
+            try:
+                d = (datetime.fromisoformat(resolved_at[h]) - datetime.fromisoformat(rt)).total_seconds() / 3600
+                if d >= 0:
+                    durations.append(d)
+            except Exception:  # noqa: BLE001
+                pass
+    n_open = sum(1 for h in routed_at if h not in resolved_at)
+    median = float(np.median(durations)) if durations else None
+    p90 = float(np.percentile(durations, 90)) if durations else None
+    est = (n_open * median) if median is not None else None
+    log.info("throughput: %d resolved, median=%s h, %d open", len(durations), median, n_open)
+    return {"n_resolved": len(durations), "median_hours": median, "p90_hours": p90,
+            "n_open": n_open, "est_remaining_hours": est}
 
 
 def relabel_rollback(adapter, cfg, change_log_path=None):  # V7 rollback via change log
