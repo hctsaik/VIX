@@ -89,7 +89,13 @@ class InMemoryAdapter(DatasetAdapter):
         for _h, d in self._s.items():
             if not d["detections"]:
                 continue
-            img = Image.open(d["src_path"]).convert("RGB")
+            try:
+                img = Image.open(d["src_path"]).convert("RGB")
+            except (OSError, ValueError) as exc:  # corrupt/truncated/unreadable file -> name it, fail clean
+                raise ValueError(
+                    f"無法讀取影像(可能損毀/截斷):{d['src_path']} — 請修復來源後重新 ingest"
+                    "(內容雜湊不變則自動跳過)"
+                ) from exc
             for det in d["detections"]:
                 det.embedding = self._embedder(crop_detection(img, det.bbox))
         self._persist()

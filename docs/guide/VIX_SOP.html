@@ -423,6 +423,9 @@ vix routing-diff           # 最近兩次路由之間有什麼改變</code></pre
     <li><b>規模近似</b>:<code>dedup</code>/<code>label-noise</code> 在 &gt;~2000 筆自動切換 LSH(次二次方、近似召回);大資料集屬刻意的近似,非精確全對比。</li>
     <li><b>快照可攜性</b>:目前 <code>content_hash</code> 含機器相關的參考路徑,跨機器同內容未必同 hash;跨機器要證明「資料集相等」請用 golden 組成 + <code>vix verify</code>(逐檔雜湊)比對,而非只比 content_hash。</li>
     <li><b>逐類門檻覆寫</b>:<code>vix set-threshold &lt;class&gt; --conf/--dist</code> 可對單一類別(如安全關鍵)獨立調嚴並記入稽核,不影響其他類別的全域百分位門檻。</li>
+    <li><b>無 SLA / 週轉時間指令</b>:帳本每筆都有 UTC <code>ts_utc</code>,可用 <code>audit --since/--until</code> 取 route 與 resolve 兩事件自行算週轉,但 VIX 不內建 SLA 儀表板;並用 <code>snapshot</code> 錨定以防尾端截斷。</li>
+    <li><b>影像層分析為單標籤近似</b>:單圖多個重疊缺陷時,偵測層指令(<code>route</code>/<code>calibrate</code>/<code>set-threshold</code>/<code>label-noise</code>/<code>drift-type</code>)為逐類正確;但影像層指令(<code>dedup</code>/<code>coverage</code>/<code>harmful</code>/<code>review-queue</code>/影像 <code>parity</code>)會以第一個偵測標籤+平均特徵代表整張,屬粗略 triage,多標籤分析請用偵測層指令。</li>
+    <li><b>跨期/跨站比較需同一 embedding 後端</b>:勿把 <code>pixel_fallback</code> 乾跑數字和真實 DINOv2 數字混在同一條趨勢比較。</li>
   </ul>
 </div>
 

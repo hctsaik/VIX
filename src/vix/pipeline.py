@@ -989,12 +989,24 @@ def review_rate_series(adapter, cfg) -> list[float]:
 def spc_monitor(series, target=None, sigma=None, lam=0.3, method="ewma"):  # concept #4
     series = list(series)
     if not series:
-        return {"alarm": False, "alarm_index": None}
-    target = float(np.median(series)) if target is None else target
-    sigma = (float(np.std(series)) or 1e-6) if sigma is None else sigma
-    if method == "cusum":
-        return spc_mod.cusum_alarm(series, target, k=0.5 * sigma, h=4 * sigma)
-    return spc_mod.ewma_alarm(series, target, sigma, lam)
+        return {"alarm": False, "alarm_index": None, "short_series": True}
+    # Estimate the control limits from an IN-CONTROL baseline (the earliest ~25% of the
+    # series), NOT the whole series — otherwise a slow monotonic drift gets absorbed into
+    # target/sigma and only alarms at the last point, defeating the leading-indicator purpose (AG4).
+    if target is None or sigma is None:
+        m = max(3, len(series) // 4)
+        base = series[:m]
+        if target is None:
+            target = float(np.median(base))
+        if sigma is None:
+            sigma = float(np.std(base)) or 1e-6
+    res = (
+        spc_mod.cusum_alarm(series, target, k=0.5 * sigma, h=4 * sigma)
+        if method == "cusum"
+        else spc_mod.ewma_alarm(series, target, sigma, lam)
+    )
+    res["short_series"] = len(series) < 8  # too few batches -> control limits not yet trustworthy
+    return res
 
 
 def parity(adapter, cfg, by="fab", lower_is_worse=True):  # concept #5

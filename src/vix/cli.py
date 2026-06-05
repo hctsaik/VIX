@@ -254,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
     try:
         return _main(argv)
-    except (FileNotFoundError, ValueError) as e:  # expected user errors -> one clean line, not a traceback
+    except (ValueError, OSError) as e:  # expected user errors (missing/corrupt files, bad state) -> clean line
         print(f"錯誤:{e}", file=sys.stderr)
         print("(先確認前置步驟,或用 --log-level DEBUG 取得完整堆疊)", file=sys.stderr)
         return 2
@@ -337,6 +337,7 @@ def _main(argv: list[str] | None = None) -> int:
         for g in groups:
             print("dup group:", ", ".join(g))
         print(f"{len(groups)} near-duplicate groups")
+        print("注:資料量 >~2000 自動切換 LSH(近似召回,非精確全對比);--adapter memory 用像素特徵,精度低於真實 DINOv2")
 
     elif args.cmd == "coverage":
         cov = pipeline.coverage(adapter, cfg, target=args.target)
@@ -487,6 +488,7 @@ def _main(argv: list[str] | None = None) -> int:
         for iss in r["issues"][:20]:
             print(f"  {iss.id}: given={iss.given_label} -> pred={iss.pred_label} (conf={iss.confidence:.2f})")
         print(f"{len(r['issues'])} label issues")
+        print("注:這是 triage 啟發式(embedding kNN 多數票當偽標籤),非統計顯著的標籤錯誤率;用於排序優先複查")
 
     elif args.cmd == "drift-type":
         r = pipeline.drift_type(adapter, cfg, args.from_tag, args.to_tag)
@@ -504,6 +506,7 @@ def _main(argv: list[str] | None = None) -> int:
                 f"近重複群={p['dup_groups']} 冗餘={p['redundant']}"
             )
         print(f"跨來源回收(tag-b 與 tag-a 近重複)= {r['cross_recycled']}")
+        print("注:這是 triage 並排比較,非統計 A/B 檢定(無 p 值/檢定力);樣本太少時 reviewer-audit 會標示樣本不足")
 
     elif args.cmd == "set-threshold":
         r = pipeline.set_threshold(adapter, cfg, args.class_name, conf_thr=args.conf, dist_thr=args.dist)
@@ -521,6 +524,8 @@ def _main(argv: list[str] | None = None) -> int:
         r = pipeline.spc_monitor(series, args.target, args.sigma, method=args.method)
         print(f"series={[round(x, 3) for x in series]}")
         print(f"alarm={r['alarm']} at index {r['alarm_index']}")
+        if r.get("short_series"):
+            print("注:序列 < 8 批,控制界線僅供參考,需更多批次才能確認趨勢")
 
     elif args.cmd == "parity":
         r = pipeline.parity(adapter, cfg, by=args.by)
@@ -528,11 +533,13 @@ def _main(argv: list[str] | None = None) -> int:
             mark = "  ⚠️ 偏低" if info["worse"] else (" [樣本不足,僅供參考]" if info.get("low_confidence") else "")
             print(f"  {args.by}:{g} = {info['value']:.3f} (rel {info['rel_to_median']:+.1%}){mark}")
         print(f"median={r['median']:.3f} flagged={r['flagged']}")
+        print("注:此處以平均信心作代理(非真實 CR/AP 顯著性檢定);新站點請先用該站自有 eval set 驗證")
 
     elif args.cmd == "cost-gate":
         r = pipeline.cost_gate_eval(cfg, args.cr, args.fa, args.miss_cost, args.fa_cost, args.budget)
         print(f"{r['verdict']}: expected_cost={r['expected_cost_per_unit']} "
               f"(miss {r['miss_component']} + fa {r['fa_component']}), budget={args.budget}")
+        print("注:miss/fa 率需來自該站點有代表性的 eval set;沿用他站數字未經驗證")
         return 0 if r["verdict"] == "GO" else 2
 
     elif args.cmd == "verify-fiftyone":
