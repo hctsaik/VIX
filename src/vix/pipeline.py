@@ -345,9 +345,15 @@ def active_learn(adapter, cfg, budget):  # S6
     cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR])
     existing = _image_items(adapter, want_tags=[Tag.GOLDEN])
     ranked = active_learning_ranking(cands, existing, budget, return_reasons=True)
-    for r in ranked:
-        r["why"] = (f"模型信心低(不確定度 {r['uncertainty']})且與既有資料差異大"
-                    f"(新穎度 {r['novelty']}),標注此張對模型提升的效益最高")
+    for r in ranked:  # build the rationale from whichever signals are actually high (no hardcoded claim)
+        parts = []
+        if r["uncertainty"] >= 0.3:
+            parts.append(f"模型信心低(不確定度 {r['uncertainty']})")
+        if r["novelty"] >= 0.1:
+            parts.append(f"與既有資料差異大(新穎度 {r['novelty']})")
+        if not parts:
+            parts.append(f"綜合分數 {r['score']}(不確定度 {r['uncertainty']}、新穎度 {r['novelty']})")
+        r["why"] = " 且 ".join(parts) + " — 標注效益相對較高"
     log.info("active_learn: %d candidates -> top %d selected", len(cands), len(ranked))
     return ranked
 
@@ -585,6 +591,7 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
                 log.warning("gate: drift auto-check skipped (%s)", exc)
     rows = list(adapter.samples())
     n_review = sum(1 for _h, _s, _d, t in rows if Tag.REVIEW in t)
+    n_golden = sum(1 for _h, _s, _d, t in rows if Tag.GOLDEN in t)  # AF1: no golden -> NO-GO, not false GO
     gaps = coverage_gaps(_detection_items(adapter, want_tags=[Tag.GOLDEN]), k=min(5, cfg.knn_k))
     under = [c for c, v in gaps.items() if v["under_represented"]]
 
@@ -603,7 +610,7 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     result = pre_train_gate(
         n_review_open=n_review, golden_train_overlap=overlap,
         under_represented=under, drift_triggered=drift_triggered,
-        audit_chain_intact=audit_ok,
+        audit_chain_intact=audit_ok, n_golden=n_golden,
     )
     DecisionLog(cfg.decision_log_path).append(
         "pre_train_gate", decision=result.verdict, extra={"reasons": result.reasons}

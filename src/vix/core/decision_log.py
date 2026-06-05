@@ -54,9 +54,11 @@ class _LockFile:
             try:
                 self.fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 return self
-            except FileExistsError:
+            # FileExistsError: lock held. PermissionError(Errno 13): Windows raises this when the
+            # holder's __exit__ unlink races our open — retry both rather than dropping the append.
+            except (FileExistsError, PermissionError):
                 if time.monotonic() >= deadline:
-                    self.fd = None  # give up rather than deadlock (best-effort)
+                    self.fd = None  # give up rather than deadlock (best-effort, single-writer)
                     return self
                 time.sleep(0.01)
 

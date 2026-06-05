@@ -70,8 +70,8 @@ class ThresholdPolicy:
         """Two independent axes -> a routing decision + human-readable reasons."""
         reasons: list[str] = []
         ct = self.thresholds.get(predicted_class)
-        if ct is None:
-            # Unknown class with no calibrated reference == maximally novel.
+        if ct is None or ct.n_support == 0:
+            # Unknown OR uncalibrated class (no golden evidence) == maximally novel -> fail safe to review.
             reasons.append(Flag.FAR_FROM_KNOWN)
         else:
             if conf < ct.conf_thr:

@@ -252,6 +252,15 @@ def main(argv: list[str] | None = None) -> int:
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+    try:
+        return _main(argv)
+    except (FileNotFoundError, ValueError) as e:  # expected user errors -> one clean line, not a traceback
+        print(f"錯誤:{e}", file=sys.stderr)
+        print("(先確認前置步驟,或用 --log-level DEBUG 取得完整堆疊)", file=sys.stderr)
+        return 2
+
+
+def _main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     cfg = Config(workspace=args.workspace) if args.workspace else Config()
     cfg.ensure_dirs()
@@ -292,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "route":
         counts = pipeline.route(adapter, cfg)
         print(f"routed: {counts['pass']} pass, {counts['review']} review")
+        if counts.get("warning"):
+            print(f"⚠️ {counts['warning']}")
 
     elif args.cmd == "guard":
         if args.build:
