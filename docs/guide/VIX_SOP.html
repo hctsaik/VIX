@@ -418,6 +418,11 @@ vix routing-diff           # 最近兩次路由之間有什麼改變</code></pre
     <li><b>移除只作用在「下游使用」,不擦除來源/歷史</b>:<code>dismiss</code>/<code>harmful --remove</code> 會讓樣本<b>排除於覆核佇列與匯出</b>(已驗證:rejected 不進 <code>export</code>),但<b>不會刪除原始資料夾的檔案,也不會改寫既有快照</b>。PII 合規移除後,含該 <code>vix_hash</code> 的舊快照需<b>重新切版</b>。</li>
     <li><b>部分品質指標為「triage 啟發式」而非統計保證</b>:<code>label-noise</code> 以 embedding kNN 多數票當偽標籤、<code>parity</code> 以平均信心當代理 — 適合「優先排序該看哪些」,<b>不應當作嚴格的標籤錯誤率 / 效能顯著性</b>。門檻(漂移、半徑)為可調啟發參數。</li>
     <li><b>離線乾跑(<code>--adapter memory</code>)用像素特徵</b>:標記為 <code>pixel_fallback</code>,品質低於真實 DINOv2;適合流程驗證與 onboarding,正式判定請用 FiftyOne 後端 + 真實權重。</li>
+    <li><b>單寫者(v0.1)</b>:稽核帳本 append 已用 sidecar 鎖 + fsync 序列化、並在鎖內計算 <code>prev_hash</code>(同機並行不會壞鏈),但<b>不保證跨網路檔案系統</b>;請維持單一寫入者,勿多人同時對同一 workspace 寫入。</li>
+    <li><b>稽核鏈偵測「中間」竄改,但 append-only 鏈本身無法偵測「尾端截斷」</b>(刪掉最後 N 筆會留下合法的較短鏈)。請搭配定期 <code>snapshot</code> 作外部錨點。讀取已容忍當機留下的半行(略過),<code>verify_chain</code>/<code>audit</code>/<code>gate</code> 會優雅降級而非崩潰。</li>
+    <li><b>規模近似</b>:<code>dedup</code>/<code>label-noise</code> 在 &gt;~2000 筆自動切換 LSH(次二次方、近似召回);大資料集屬刻意的近似,非精確全對比。</li>
+    <li><b>快照可攜性</b>:目前 <code>content_hash</code> 含機器相關的參考路徑,跨機器同內容未必同 hash;跨機器要證明「資料集相等」請用 golden 組成 + <code>vix verify</code>(逐檔雜湊)比對,而非只比 content_hash。</li>
+    <li><b>逐類門檻覆寫</b>:<code>vix set-threshold &lt;class&gt; --conf/--dist</code> 可對單一類別(如安全關鍵)獨立調嚴並記入稽核,不影響其他類別的全域百分位門檻。</li>
   </ul>
 </div>
 

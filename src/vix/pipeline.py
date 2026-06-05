@@ -48,7 +48,7 @@ from .core.quality import class_quality_trend, reviewer_consistency
 from .core.reference import FrozenReference, GuardReport
 from .core.report import build_report, write_report
 from .core.scorer import OutlierScorer, intra_class_knn_distances
-from .core.threshold import ThresholdPolicy
+from .core.threshold import ClassThreshold, ThresholdPolicy
 from .core.triage import review_queue as _review_queue
 from .logging_setup import get_logger
 from .types import Routing, Tag
@@ -723,6 +723,40 @@ def false_positive_rate(cfg):  # V6 FP tracking
     return {"reviewed": reviewed, "dismissed_false_alarms": dismissed, "fp_rate": round(fp, 3)}
 
 
+def set_threshold(adapter, cfg, class_name, conf_thr=None, dist_thr=None):  # AE6 per-class review policy
+    """First-class, audited per-class threshold override on top of global calibration.
+    Tighten a safety-critical class (higher conf bar / tighter distance) without re-flattening all."""
+    if not cfg.thresholds_path.exists():
+        raise ValueError("尚未校準;請先執行 vix calibrate")
+    policy = ThresholdPolicy.load(cfg.thresholds_path)
+    ct = policy.thresholds.get(class_name) or ClassThreshold(0.0, float("inf"), 0)
+    new_conf = ct.conf_thr if conf_thr is None else float(conf_thr)
+    new_dist = ct.dist_thr if dist_thr is None else float(dist_thr)
+    policy.thresholds[class_name] = ClassThreshold(new_conf, new_dist, ct.n_support)
+    policy.meta.setdefault("overrides", {})[class_name] = {"conf_thr": new_conf, "dist_thr": new_dist}
+    policy.save(cfg.thresholds_path)
+    DecisionLog(cfg.decision_log_path).append(
+        "set_threshold", decision=class_name, extra={"conf_thr": new_conf, "dist_thr": new_dist}
+    )
+    log.info("set_threshold: %s conf<%.3f dist>%.3f (manual override, audited)", class_name, new_conf, new_dist)
+    return {"class": class_name, "conf_thr": new_conf, "dist_thr": new_dist}
+
+
+def reasons_breakdown(cfg):  # AE7 management summary: rejected/review grouped by plain-language reason
+    recs = DecisionLog(cfg.decision_log_path).read_all()
+    by_reason: dict[str, int] = {}
+    n_review = 0
+    for r in recs:
+        if r.get("event") == "route" and r.get("decision") == "review":
+            n_review += 1
+            for reason in r.get("extra", {}).get("reasons", []):
+                by_reason[reason] = by_reason.get(reason, 0) + 1
+    rejected = sum(len(r.get("extra", {}).get("ids", [])) for r in recs if r.get("event") == "dismiss")
+    rejected += sum(1 for r in recs if r.get("event") == "review" and r.get("decision") == "false_alarm")
+    log.info("reasons_breakdown: %d review, %d rejected, %d reason types", n_review, rejected, len(by_reason))
+    return {"n_review": n_review, "rejected": rejected, "by_reason": by_reason}
+
+
 def relabel_rollback(adapter, cfg, change_log_path=None):  # V7 rollback via change log
     path = Path(change_log_path or (cfg.workspace / "relabel_changes.jsonl"))
     if not path.exists():
@@ -964,7 +998,8 @@ def parity(adapter, cfg, by="fab", lower_is_worse=True):  # concept #5
         if grp is not None:
             vals[grp].append(max((d.confidence for d in dets), default=0.0))
     group_means = {g: sum(v) / len(v) for g, v in vals.items() if v}
-    res = performance_parity(group_means, lower_is_worse=lower_is_worse)
+    group_counts = {g: len(v) for g, v in vals.items() if v}
+    res = performance_parity(group_means, lower_is_worse=lower_is_worse, group_counts=group_counts)
     log.info("parity by %s: median=%.3f flagged=%s", by, res["median"], res["flagged"])
     return res
 

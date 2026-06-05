@@ -202,6 +202,11 @@ def _build_parser() -> argparse.ArgumentParser:
     scmp = sub.add_parser("compare", help="side-by-side compare two tagged subsets (e.g. two annotation vendors) (AC4)")
     scmp.add_argument("--tag-a", dest="tag_a", required=True)
     scmp.add_argument("--tag-b", dest="tag_b", required=True)
+    sst = sub.add_parser("set-threshold", help="override one class's routing threshold (per-class policy), audited")
+    sst.add_argument("class_name")
+    sst.add_argument("--conf", type=float, default=None, help="flag low_conf below this confidence")
+    sst.add_argument("--dist", type=float, default=None, help="flag far_from_known above this distance")
+    sub.add_parser("reasons", help="management summary: review/rejected grouped by plain-language reason")
     ssp = sub.add_parser("spc", help="SPC EWMA/CUSUM leading indicator on per-batch review-rate (#4)")
     ssp.add_argument("--method", choices=["ewma", "cusum"], default="ewma")
     ssp.add_argument("--target", type=float, default=None)
@@ -489,6 +494,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(f"跨來源回收(tag-b 與 tag-a 近重複)= {r['cross_recycled']}")
 
+    elif args.cmd == "set-threshold":
+        r = pipeline.set_threshold(adapter, cfg, args.class_name, conf_thr=args.conf, dist_thr=args.dist)
+        print(f"set-threshold {r['class']}: conf<{r['conf_thr']} dist>{r['dist_thr']} (手動覆寫,已記稽核)")
+
+    elif args.cmd == "reasons":
+        r = pipeline.reasons_breakdown(cfg)
+        label = {"low_conf": "低信心", "far_from_known": "離已知太遠", "low_support": "支撐不足", "no_detection": "無偵測"}
+        print(f"覆核總數={r['n_review']}  已排除(誤報/移除)={r['rejected']}")
+        for reason, n in sorted(r["by_reason"].items(), key=lambda kv: -kv[1]):
+            print(f"  {label.get(reason, reason)}: {n}")
+
     elif args.cmd == "spc":
         series = pipeline.review_rate_series(adapter, cfg)
         r = pipeline.spc_monitor(series, args.target, args.sigma, method=args.method)
@@ -498,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "parity":
         r = pipeline.parity(adapter, cfg, by=args.by)
         for g, info in r["groups"].items():
-            mark = "  ⚠️ 偏低" if info["worse"] else ""
+            mark = "  ⚠️ 偏低" if info["worse"] else (" [樣本不足,僅供參考]" if info.get("low_confidence") else "")
             print(f"  {args.by}:{g} = {info['value']:.3f} (rel {info['rel_to_median']:+.1%}){mark}")
         print(f"median={r['median']:.3f} flagged={r['flagged']}")
 
