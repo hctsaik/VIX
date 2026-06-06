@@ -1008,6 +1008,48 @@ def consistency(adapter, cfg, max_pairs=20):
     return {"findings": findings, "n_classes": len(emb_by_class), "has_eval": confusion is not None}
 
 
+def adapt_embedding(adapter, cfg, save=False, max_pca=64, folds=5):
+    """Learn a lightweight supervised projection of frozen DINOv2 (regularized LDA on golden GT) and
+    report, per class-pair, whether a pair that's inseparable in frozen DINO becomes SEPARABLE after
+    adaptation (a 'rescue' => representation problem, not a taxonomy dead-end). Before/after
+    separability is k-fold CROSS-VALIDATED (projection refit on train folds only) to stay honest on
+    small GT. Offline, closed-form, NOT YOLO training. ``--save`` persists embed_projection.npz."""
+    from .core.embed_adapt import cv_pair_separability, fit_projection, save_projection
+
+    emb_by_class = {c: np.atleast_2d(np.asarray(e, float))
+                    for c, e in _emb_by_class(adapter, {Tag.GOLDEN}).items()}
+    classes = sorted(c for c, e in emb_by_class.items() if e.shape[0] >= 2)
+    if len(classes) < 2:
+        raise ValueError("需要 ≥2 類、每類 ≥2 筆 golden 才能學投影")
+    X = np.vstack([emb_by_class[c] for c in classes])
+    y = np.concatenate([[c] * emb_by_class[c].shape[0] for c in classes])
+    proj = fit_projection(X, y, max_pca=max_pca)
+
+    pairs = []
+    for a in range(len(classes)):
+        for b in range(a + 1, len(classes)):
+            ci, cj = classes[a], classes[b]
+            fr, ad, n_min = cv_pair_separability(emb_by_class[ci], emb_by_class[cj], folds=folds, max_pca=max_pca)
+            pairs.append({"pair": [ci, cj], "frozen_sep_err": fr, "adapted_sep_err": ad, "n_min": n_min,
+                          "rescued": bool(fr > 0.35 and ad <= 0.35),
+                          "delta": round(fr - ad, 4)})
+    pairs.sort(key=lambda p: -p["delta"])
+    saved = None
+    if save:
+        saved = str(cfg.workspace / "embed_projection.npz")
+        save_projection(saved, proj)
+    n_rescued = sum(p["rescued"] for p in pairs)
+    DecisionLog(cfg.decision_log_path).append(
+        "adapt_embedding", decision=str(len(classes)),
+        extra={"out_dim": int(proj["W"].shape[1]) if proj.get("W") is not None else 0,
+               "n_pairs": len(pairs), "n_rescued": n_rescued, "saved": bool(save),
+               "note": "supervised LDA projection of frozen DINOv2 from golden GT; before/after CV'd; offline, no YOLO training"})
+    log.info("adapt_embedding: %d classes -> %dd projection, %d/%d pairs rescued, saved=%s",
+             len(classes), int(proj["W"].shape[1]) if proj.get("W") is not None else 0, n_rescued, len(pairs), bool(save))
+    return {"classes": classes, "out_dim": int(proj["W"].shape[1]) if proj.get("W") is not None else 0,
+            "pairs": pairs, "n_rescued": n_rescued, "saved": saved}
+
+
 def bank_audit(adapter, cfg, defect_tag=Tag.GOLDEN, reflection_tag=Tag.REJECTED, normal_tag=None,
                conf_lo=0.05, conf_hi=0.25, tau=0.10, k=None, novelty_radius=0.30,
                dedup_distance=0.05, top=50):

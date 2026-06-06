@@ -94,6 +94,7 @@
   <a href="#b8">B8. 模型閉環 v2:錯誤分型 / box-qa / challenge-guard</a>
   <a href="#b9">B9. YOLO 弱點報告:hardneg / weakness-report</a>
   <a href="#b10">B10. 一致性歸因:consistency(GT × 嵌入)</a>
+  <a href="#b11">B11. 領域自適應 embedding:adapt-embedding</a>
   <h2>實戰 &amp; 附錄</h2>
   <a href="#scenario">C. 標準情境 SOP</a>
   <a href="#explore">D. 探索更多 / 排解</a>
@@ -460,6 +461,17 @@ vix set-eval-baseline --protect bubble --protect-drop 0.05 --map-drop 0.02
 </table>
 <p>每對附:可分性 sep_err [Wilson CI]、O[i→j]、C[i→j]、Δ 的保守 CI、支撐階梯(insufficient&lt;10 / provisional 10–20 / supported ≥20)。</p>
 <div class="warn"><b>誠實邊界:</b>諮詢式,<b>絕不自動改標/自動 merge</b>。可分性措辭一律綁「<b>在目前 embedding 空間</b>」(凍結 DINO 可能才是瓶頸,非 taxonomy 真壞);`0∈CI(Δ)` 不給方向性歸因;merge 建議需 supported。多標註者 κ 路線需 schema 變更 + 多標註資料,<b>延後</b>。放大價值的下一步:佇列命中率飛輪 + <b>領域自適應 embedding</b>(用 golden 在凍結 DINO 上學輕量投影,非訓練 YOLO)把整個 stack 抬高。</div>
+
+<!-- ============ B11 ============ -->
+<h2 class="sec" id="b11">B11. 領域自適應 embedding:<code>adapt-embedding</code> <span class="tag vix">VIX 客製</span></h2>
+<p>B10 可能判一對類別「在目前 embedding 空間不可分」——但凍結 DINOv2 是通用編碼器,這可能是<b>編碼器</b>的限制,不是真的 taxonomy 死路。本指令用 golden GT 在凍結 DINO 上學一個<b>輕量監督投影</b>(正規化 LDA:PCA 預降維 + shrinkage),把「不可分」變成可證偽的問題:<b>學個投影後分不分得開?</b> 分得開 → 是表徵問題(可修),不是定義死路。</p>
+<pre><code>vix adapt-embedding [--save]      # 學投影、逐對報告 凍結→投影 可分性、--save 持久化 embed_projection.npz</code></pre>
+<ul>
+  <li><b>離線、閉式、$0</b>:幾個矩陣運算,<b>不是訓練 YOLO</b>(秒級 CPU)。</li>
+  <li><b>誠實</b>:投影前/後可分性用 <b>k-fold 交叉驗證</b>(投影只在 train fold 上 fit)——在同一批點上 fit 又評估會假性可分,CV 是防過擬合的把關。真正不可分的對<b>不會</b>被假性救回。</li>
+  <li>逐對輸出 <code>凍結 sep_err → 投影 sep_err (Δ)</code> 與 <b>rescued</b> 旗標(凍結&gt;0.35 不可分 → 投影後 ≤0.35 可分)。</li>
+</ul>
+<div class="warn"><b>用法銜接:</b>若 B10 <code>consistency</code> 判某對 <b>taxonomy / inseparable</b>,先跑 <code>adapt-embedding</code> 看是否 <b>rescued</b>——救得回 = 表徵問題(別 merge,這對其實可分),救不回才是真的定義死路。<br><b>限制:</b>DINO 為 768 維、golden 樣本少時 PCA 預降維可能丟掉低變異的判別方向(已 shrinkage 緩解);投影目前作為<b>診斷 + 已存 artifact</b>,把它套用到 routing/bank-audit/error-mine 全 stack(需在投影空間重校準)是<b>下一步</b>。</div>
 
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>

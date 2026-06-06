@@ -279,6 +279,9 @@ def _build_parser() -> argparse.ArgumentParser:
     swr.add_argument("--out", default=None)
     scon = sub.add_parser("consistency", help="GT x embedding attribution: per class-pair separability + confusion-overlap 2x2 (taxonomy/model/label_noise) — advisory, CI-gated")
     scon.add_argument("--max-pairs", type=int, default=20)
+    sae = sub.add_parser("adapt-embedding", help="learn a supervised LDA projection of frozen DINOv2 from golden GT; report which 'inseparable' pairs become separable (CV'd) — offline, not YOLO training")
+    sae.add_argument("--save", action="store_true", help="persist embed_projection.npz")
+    sae.add_argument("--max-pca", type=int, default=64)
     sba = sub.add_parser("bank-audit", help="multi-bank Top-K embedding audit of low-conf proposals -> defect/reflection/unknown (advisory)")
     sba.add_argument("--defect-tag", default="golden")
     sba.add_argument("--reflection-tag", default="rejected")
@@ -768,6 +771,14 @@ def _main(argv: list[str] | None = None) -> int:
         if not r["findings"]:
             print("  無(需 ≥2 類 golden;接 eval-ingest 才能歸因 taxonomy/model/label)")
         print("  註:諮詢式;可分性綁定目前 embedding 空間;小樣本→insufficient_support,絕不自動 merge")
+
+    elif args.cmd == "adapt-embedding":
+        r = pipeline.adapt_embedding(adapter, cfg, save=args.save, max_pca=args.max_pca)
+        print(f"領域自適應投影:{len(r['classes'])} 類 → {r['out_dim']}d;{r['n_rescued']}/{len(r['pairs'])} 對被「救回」(凍結不可分→投影後可分)")
+        for p in r["pairs"]:
+            tag = "✅救回(表徵問題,可修)" if p["rescued"] else ("↓改善" if p["delta"] > 0.05 else "—")
+            print(f"  {p['pair'][0]}↔{p['pair'][1]}: 凍結 sep_err={p['frozen_sep_err']} → 投影 {p['adapted_sep_err']} (Δ{p['delta']}, n_min={p['n_min']})  {tag}")
+        print(f"  {'已存 embed_projection.npz' if r['saved'] else '(未存;加 --save 持久化投影)'};CV 量測、離線、非訓練 YOLO")
 
     elif args.cmd == "bank-audit":
         r = pipeline.bank_audit(

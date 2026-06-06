@@ -42,7 +42,11 @@ VIX 是一個封閉的 embedding 世界 —— `route`/`gate`/`coverage`/`label-
 > **更新(GT × 嵌入一致性歸因,已實作 + 測試,含 Playwright):** 三輪多代理結論「確實有價值 → 放大」。
 > GT 把自我參照的標籤訊號升級成**歸因**:`vix consistency` 逐類對給 separability(LOO-kNN,encoder-hedged)+ 混淆×重疊 2×2 →
 > **taxonomy / model / label_noise**(三者處置相反),整合進 weakness-report(.md + .html)。諮詢式 + CI + 支撐閘,絕不自動 merge。
-> 決策見 [gt-consistency.md](gt-consistency.md),操作見 SOP §B10。下一步放大:佇列命中率飛輪 + 領域自適應 embedding。
+> 決策見 [gt-consistency.md](gt-consistency.md),操作見 SOP §B10。
+
+> **更新(領域自適應 embedding,放大步 #2,已實作 + 測試):** `vix adapt-embedding` 用 golden GT 在凍結 DINO 上學正規化 LDA 投影(閉式、$0、**非訓練 YOLO**),
+> 逐對 **k-fold CV** 報告凍結→投影可分性 + **rescued** 旗標:把一致性層的「在 DINO 不可分」死路變成可證偽的「表徵問題、可修」。`core/embed_adapt.py`、SOP §B11。
+> 仍待:把投影套用到全 stack(需 gate 驗證)+ 佇列命中率飛輪(放大步 #1)。
 
 ### #2 逐框「框品質」QA `vix box-qa` ✅ 已實作
 逐張、逐框靜態檢查:**過鬆/過大框、退化框(w或h≈0)、貼邊截斷框、長寬比超出該類包絡**。
