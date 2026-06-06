@@ -254,6 +254,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sra = sub.add_parser("reviewer-audit", help="per-reviewer self-consistency (U2)")
     sra.add_argument("--class", dest="class_filter", default=None, help="restrict to one class")
     sub.add_parser("gate", help="pre-training go/no-go gate (U7)")
+    sbg = sub.add_parser("batch-gate", help="can THIS batch be admitted? batch-scoped hygiene + leakage-safety verdict (BLOCK/CLEAN/PASS/PARTIAL) — NOT a mAP-gain promise")
+    sbg.add_argument("batch", help="batch id (e.g. w23)")
+    sbg.add_argument("--max-distance", type=float, default=0.05, help="near-duplicate cosine-distance threshold")
     sex = sub.add_parser("explain", help="drill-down why one image was flagged (U9)")
     sex.add_argument("hash")
     sve = sub.add_parser("verify", help="verify a received dataset vs its export manifest (U8)")
@@ -696,6 +699,16 @@ def _main(argv: list[str] | None = None) -> int:
                   f"conflicts={len(info['conflicts'])}, n={info.get('n_decisions', 0)}{flag}")
         print("注:本指標僅量測『自我一致性』(同一人對近乎相同的樣本是否給相同決策),"
               "無法證明某次『確認』是否真的有人看過。")
+
+    elif args.cmd == "batch-gate":
+        r = pipeline.batch_gate(adapter, cfg, args.batch, max_distance=args.max_distance)
+        print(f"batch-gate {r['batch']}: {r['verdict']}({r['n_batch']} 張)")
+        for x in r["reasons"]:
+            print(f"  - {x}")
+        if r["block"]["eval_leakage"]:
+            print(f"  洩漏(BLOCK)樣本: {r['block']['eval_leakage'][:10]}")
+        print("  註:這是『資料衛生 + 洩漏安全』判定,非『進訓練會漲 mAP』的保證(VIX 不重訓)")
+        return 0 if r["verdict"] in ("PASS", "CLEAN") else 2
 
     elif args.cmd == "gate":
         r = pipeline.pre_train_gate_stage(adapter, cfg)

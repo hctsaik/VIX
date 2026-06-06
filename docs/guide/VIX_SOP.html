@@ -96,6 +96,7 @@
   <a href="#b10">B10. 一致性歸因:consistency(GT × 嵌入)</a>
   <a href="#b11">B11. 領域自適應 embedding:adapt-embedding</a>
   <a href="#b12">B12. 佇列命中率自我校準:queue-hit-rate</a>
+  <a href="#b13">B13. 批次准入:batch-gate(這一批能不能進?)</a>
   <h2>實戰 &amp; 附錄</h2>
   <a href="#scenario">C. 標準情境 SOP</a>
   <a href="#explore">D. 探索更多 / 排解</a>
@@ -495,6 +496,19 @@ vix adapt-embedding --save --enable  # gate=GO 才寫啟用標記;之後 error-m
 vix error-mine --batch w23        # 同理,只排這批的候選
 vix ap-trend [--class bubble]     # 從 audit log 看 per-class AP / mAP / 健康度跨輪軌跡(離線、可稽核)</code></pre>
 <p><b>批次範圍</b>答「這一批能不能進、要清什麼」(每週真實問題)。<b>ap-trend</b> 從 hash 鏈日誌讀你歷次 <code>eval-ingest</code> 的 per-class AP → 軌跡 + Δ,答「過去幾輪策展有沒有讓 bubble 變好」;<b>eval set 變過會標「不可直接比較」</b>(避免 val 變簡單的假漲)。不需 VIX 重訓 —— AP 數字來自你定期外部 eval 餵進來,VIX 離線存+讀。</p>
+
+<!-- ============ B13 ============ -->
+<h2 class="sec" id="b13">B13. 批次准入:<code>batch-gate</code>(這一批能不能進?) <span class="tag vix">VIX 客製</span></h2>
+<p>工程師每週真正的問題,一個指令答完。決策見 <a href="../discussion/batch-gate.md">batch-gate.md</a>。</p>
+<pre><code>vix batch-gate w23      # 對 batch:w23 給 BLOCK / PARTIAL / CLEAN / PASS 判定 + 該清清單</code></pre>
+<table>
+  <tr><th>判定</th><th>意思 / 該做什麼</th></tr>
+  <tr><td><b>BLOCK</b></td><td>因果性傷害:① 批次↔<b>凍結 eval/golden 近重複洩漏</b>(會悄悄灌高你信任的 mAP)② 退化框。<b>先處理才能進</b></td></tr>
+  <tr><td><b>PARTIAL</b></td><td>沒有凍結 eval/golden → <b>洩漏檢查跳過</b>(保護模型的主檢查不可用)。<b>不是 PASS</b></td></tr>
+  <tr><td><b>CLEAN</b></td><td>無 block,但有可清項(未覆核 / 疑似標錯 / 批次內近重複 / 自信卻錯)→ 清完即可進</td></tr>
+  <tr><td><b>PASS</b></td><td>衛生乾淨、無洩漏。可進</td></tr>
+</table>
+<div class="warn"><b>誠實邊界:</b>這是<b>資料衛生 + 洩漏安全</b>判定,<b>不是「進訓練會漲 mAP」的保證</b>(VIX 不重訓)。HURT(洩漏/退化框)近乎因果確定;HELP(覆蓋/新穎度)是弱代理、僅諮詢。<b>無 eval → PARTIAL 不靜默 PASS</b>;pixel_fallback 後端會標「近重複偵測較粗」。<b>不</b>提供 batch value score/dashboard(把確定傷害與弱代理平均=不誠實)。放大:被採用後加 <code>batch_admit</code> hash 鏈帳本(可辯護 + 可逆 + 可查),見 batch-gate.md。</div>
 
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>

@@ -116,6 +116,44 @@ def pre_train_gate(
     )
 
 
+def batch_gate_verdict(block: dict, clean: dict, eval_available: bool, backend_ok: bool = True
+                       ) -> tuple[str, list[str]]:
+    """Per-batch admit verdict (the weekly 'can THIS batch go in?'). HYGIENE + leakage-safety only —
+    NOT a mAP-gain promise (VIX doesn't retrain). Pure.
+
+    block = {check: [ids]} — causal-harm checks (leakage into frozen eval/golden, degenerate boxes);
+            any non-empty => BLOCK.
+    clean = {signal: ids|count} — advisory items to clean (open review, label-noise, dups, conf-wrong);
+            they NEVER block, only populate the clean-list.
+    Verdict envelope: BLOCK (causal harm) > PARTIAL (leakage uncheckable: no frozen eval/golden, so the
+    primary model-protecting check is UNAVAILABLE — never silently PASS) > CLEAN (no block, but items to
+    clean) > PASS."""
+    reasons: list[str] = []
+    blocking = {k: v for k, v in block.items() if v}
+    for k, v in blocking.items():
+        reasons.append(f"BLOCK {k}:{len(v)} 筆(因果性傷害,須先處理)")
+
+    def _n(v):
+        return len(v) if isinstance(v, (list, set, tuple)) else int(v or 0)
+
+    n_clean = sum(_n(v) for v in clean.values())
+    if blocking:
+        verdict = "BLOCK"
+    elif not eval_available:
+        verdict = "PARTIAL"
+        reasons.append("PARTIAL:無凍結 eval/golden → 洩漏檢查跳過(保護模型的主要因果檢查不可用,勿當作 PASS)")
+    elif n_clean:
+        verdict = "CLEAN"
+    else:
+        verdict = "PASS"
+    for k, v in clean.items():
+        if _n(v):
+            reasons.append(f"clean {k}:{_n(v)}")
+    if not backend_ok:
+        reasons.append("注意:pixel_fallback 後端 → 近重複偵測較粗;PASS 僅代表『未發現粗略重疊』,非『證明乾淨』")
+    return verdict, reasons
+
+
 def cost_gate(
     miss_rate: float,
     fa_rate: float,

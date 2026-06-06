@@ -720,6 +720,76 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     return result
 
 
+def batch_gate(adapter, cfg, batch, max_distance=0.05):
+    """The weekly 'can THIS batch go into training? what must I clean first?' verdict.
+
+    HYGIENE + leakage-safety only — NOT a mAP-gain promise (VIX doesn't retrain). Two CAUSAL-harm
+    BLOCK checks: (1) batch -> frozen eval/golden near-duplicate leakage (silently inflates the mAP
+    the gate trusts) — the one genuinely-new check; (2) degenerate boxes in the batch. Plus an
+    advisory clean-list (open review / suspected label errors / within-batch dups / confidently-wrong),
+    which never blocks. Verdict BLOCK/PARTIAL/CLEAN/PASS (PARTIAL = no frozen eval/golden, so leakage
+    is uncheckable — never a silent PASS). Reuses existing batch-scoped primitives; logs a batch_gate
+    audit entry. No score, no dashboard."""
+    from .core.analytics import cross_split_leakage, near_duplicate_groups, suspected_label_errors
+    from .core.box_qa import audit_boxes
+    from .core.gate import batch_gate_verdict
+
+    btag = f"batch:{batch}"
+    rows = list(adapter.samples())
+    batch_hashes = {h for h, _s, _d, t in rows if btag in t}
+    if not batch_hashes:
+        raise ValueError(f"找不到 batch '{batch}'(tag {btag});請先 vix ingest --batch {batch}")
+
+    # BLOCK 1 (NEW): leakage batch -> frozen eval/golden (contamination inflates the trusted mAP)
+    items = []
+    for h, _s, dets, tags in rows:
+        embs = [np.asarray(d.embedding, float) for d in dets if d.embedding is not None]
+        if not embs:
+            continue
+        if Tag.GOLDEN in tags or Tag.EVAL in tags:
+            split = "frozen"
+        elif btag in tags:
+            split = "batch"
+        else:
+            continue  # only compare the batch against the frozen eval/golden set
+        items.append(EmbItem(h, dets[0].label if dets else "", np.mean(np.vstack(embs), axis=0), split=split))
+    eval_available = any(it.split == "frozen" for it in items)
+    leak_ids = set()
+    if eval_available:
+        for g in cross_split_leakage(items, max_distance):
+            if {"frozen", "batch"} <= set(g["splits"]):
+                leak_ids |= {i for i in g["ids"] if i in batch_hashes}  # batch-side offenders
+
+    # BLOCK 2: degenerate boxes in the batch (malformed training targets)
+    recs = [{"id": h, "label": d.label, "bbox": d.bbox.as_tuple()}
+            for h, _s, dets, t in rows if btag in t for d in dets]
+    degenerate = sorted({i["id"] for i in audit_boxes(recs) if i["issue"] == "degenerate"})
+
+    # advisory clean-list (never blocks)
+    n_review = sum(1 for h, _s, _d, t in rows if btag in t and Tag.REVIEW in t)
+    noise = [iss.id for iss in suspected_label_errors(_detection_items(adapter, want_tags=[btag]), cfg.knn_k)]
+    within_dups = sum(len(g) - 1 for g in near_duplicate_groups(_image_items(adapter, want_tags=[btag]), max_distance))
+    try:
+        conf_wrong = [r["id"] for r in hardneg(adapter, cfg, mode="gt_free", batch=batch)["rows"]]
+    except (ValueError, OSError):
+        conf_wrong = []
+
+    backend_ok = str(cfg.embedding_backend or "").startswith("dinov2")
+    block = {"eval_leakage": sorted(leak_ids), "degenerate_boxes": degenerate}
+    clean = {"open_review": n_review, "label_noise": noise,
+             "within_batch_dups": within_dups, "confident_wrong": conf_wrong}
+    verdict, reasons = batch_gate_verdict(block, clean, eval_available, backend_ok)
+    DecisionLog(cfg.decision_log_path).append(
+        "batch_gate", batch_id=str(batch), decision=verdict,
+        extra={"n_batch": len(batch_hashes), "eval_available": eval_available, "backend": cfg.embedding_backend,
+               "block": {k: len(v) for k, v in block.items()},
+               "clean": {k: (len(v) if isinstance(v, list) else v) for k, v in clean.items()},
+               "note": "hygiene + leakage safety, NOT a mAP-gain promise (no retraining in VIX)"})
+    log.info("batch_gate %s: %s (%d imgs; %s)", batch, verdict, len(batch_hashes), reasons)
+    return {"batch": batch, "verdict": verdict, "reasons": reasons, "n_batch": len(batch_hashes),
+            "block": block, "clean": clean, "eval_available": eval_available}
+
+
 def explain_one(adapter, cfg, vix_hash):  # U9
     policy = ThresholdPolicy.load(cfg.thresholds_path) if cfg.thresholds_path.exists() else None
     scorer = OutlierScorer(_emb_by_class(adapter, {Tag.GOLDEN}), k=cfg.knn_k)
