@@ -15,6 +15,31 @@ never proof that labelling raises mAP — stamped throughout.
 from __future__ import annotations
 
 _PROXY = "_(PROXY:未重訓,此為嫌疑/優先排序,非實測 mAP 增益)_"
+_CLOSENESS_LEGEND = "closeness = 對該類失敗區的 cosine 鄰近度(0–1,僅排序用,非機率);已解決的候選已標記,不需重做。"
+_WRONGNESS_LEGEND = "wrongness = conf × 超出該類嵌入門檻的程度(排序用,非機率);knn_dist>dist_thr 即翻盤依據。"
+# a 'label' queue's "hit" == "a human acted on it", so its hit-rate is identically its coverage —
+# it measures effort, not suggestion quality. Shown as coverage so it isn't misread as precision.
+_LABEL_HITRATE_NOTE = "'label' 佇列(error-mine/weakness)的「命中」=有人處理,故命中率≡覆蓋率,只表行動量、非品質。"
+
+
+def _provenance_lines(data: dict) -> list[str]:
+    """Provenance stamp (L1) + eval-set comparability banner (L3) — Markdown."""
+    prov = data.get("provenance") or {}
+    if not prov:
+        return []
+    out: list[str] = []
+    parts = []
+    if prov.get("eval_set_hash"):
+        parts.append(f"eval_set={prov['eval_set_hash'][:8]}")
+    if prov.get("pool_hash"):
+        parts.append(f"pool={prov['pool_hash'][:8]}")
+    parts.append(f"上份報告 {prov['prev_report_ts']}" if prov.get("prev_report_ts") else "首份報告")
+    out.append(f"_出處:{' ｜ '.join(parts)}_\n")
+    if prov.get("comparable") is False:
+        out.append("> ⚠ **本期 eval set 與上期不同 → mAP/AP 不可與上期直接比較**(可能只是 val 變簡單)\n")
+    elif prov.get("comparable") and prov.get("prev_mAP") is not None and data.get("mAP") is not None:
+        out.append(f"> 與上期同一 eval set,可比較:mAP {prov['prev_mAP']} → {data['mAP']}\n")
+    return out
 
 
 def render_weakness_report(data: dict) -> str:
@@ -26,7 +51,7 @@ def render_weakness_report(data: dict) -> str:
         if s.get("todo"):
             L.append(">\n> **現在做這個:** " + " ｜ ".join(s["todo"]))
         L.append("")
-    L.append(f"_{_PROXY.strip('_')}(未重訓 → 排序為嫌疑/優先,非實測 mAP;可分性綁定目前 embedding 空間。)_\n")
+    L.append(f"_{_PROXY.strip('_')};可分性綁定目前 embedding 空間。_\n")
     bscope = f"　範圍:**batch {data['batch']}**(佇列/翻盤僅看這批)" if data.get("batch") else ""
     L.append("模式:**%s** %s%s\n" % (
         mode, "(有標註 val set → 以 GT 區塊為主)" if mode == "gt" else "(GT-free → 靠嵌入翻盤/代理訊號)", bscope))
@@ -37,6 +62,7 @@ def render_weakness_report(data: dict) -> str:
         else:
             extra = "　(loc_gap N/A:eval 為單一 IoU,未評估定位)"
         L.append(f"- **mAP@0.5 = {data['mAP']}**{extra}\n")
+    L += _provenance_lines(data)
 
     pc = data.get("per_class") or []
     if pc:
@@ -69,23 +95,28 @@ def render_weakness_report(data: dict) -> str:
     if ov:
         L.append("\n## 自信但嵌入翻盤(無 GT,適用未標註新資料)\n")
         L.append("YOLO 高信心、但 DINOv2 嵌入判定離該類太遠 → 疑似自信誤報。")
+        L.append(f"_{_WRONGNESS_LEGEND}_")
         L.append("| 影像 | 類別 | conf | knn_dist | dist_thr | wrongness |")
         L.append("|---|---|---|---|---|---|")
         for r in ov:
-            L.append(f"| {r['id']} | {r.get('pred_class')} | {r['conf']} | {r.get('knn_dist')} | {r.get('dist_thr')} | {r['wrongness']} |")
+            L.append(f"| {r['id']} | {r.get('pred_class')} | {r['conf']} | {r.get('knn_dist')} | {r.get('dist_thr')} | {round(r['wrongness'], 2)} |")
         L.append("")
 
     q = data.get("queue") or {}
     if q:
         L.append("\n## 該標哪些(逐弱類「去標這些」佇列)\n")
         L.append("每個弱類,列出未標註資料中最接近該類失敗處的候選(完整清單見 `weakness_worklist.csv`)。")
+        L.append(f"_{_CLOSENESS_LEGEND}_")
         hr_wq = next((h for h in (data.get("hit_rate") or []) if h["queue"] == "weakness_queue"), None)
-        if hr_wq:  # show THIS queue's track record right where it's used (not buried at the bottom)
-            prec = "-" if hr_wq["precision"] is None else hr_wq["precision"]
-            note = "(樣本不足,尚不可信)" if hr_wq.get("insufficient") else ""
-            L.append(f"_此佇列歷史命中率:{prec}(已解決 {hr_wq['resolved']}/{hr_wq['emitted']}){note}_")
+        if hr_wq:  # show THIS queue's track record where it's used — as coverage (see _LABEL_HITRATE_NOTE)
+            cov = "-" if hr_wq.get("coverage") is None else hr_wq["coverage"]
+            note = "(樣本不足)" if hr_wq.get("insufficient") else ""
+            L.append(f"_此佇列已處理率(coverage):{cov}(已解決 {hr_wq['resolved']}/{hr_wq['emitted']}){note};{_LABEL_HITRATE_NOTE}_")
         for c, cands in q.items():
-            L.append(f"- **{c}**: " + ", ".join(f"{x['id']}({x['closeness']})" for x in cands))
+            n_res = sum(1 for x in cands if x.get("resolved"))
+            head = f"- **{c}**" + (f"(待辦 {len(cands) - n_res} / 已解決 {n_res})" if n_res else f"({len(cands)} 個)") + ": "
+            L.append(head + ", ".join(
+                (f"~~{x['id']}~~" if x.get("resolved") else f"{x['id']}") + f"({round(x['closeness'], 2)})" for x in cands))
         L.append("")
 
     cons = data.get("consistency") or []
@@ -100,7 +131,10 @@ def render_weakness_report(data: dict) -> str:
             c = (f"{f['C_ij']} {f.get('C_ci')} (n={f['support'].get('n_gt_i')})" if f.get("C_ij") is not None else "-")
             dlt = f"{f['delta']} {f.get('delta_ci')}" if f.get("delta") is not None else "-"
             sup = f"g{f['support']['golden_i']}/{f['support']['golden_j']} ({f['tier']})"
-            v = f"**{f['verdict']}**" + ("(可修)" if f.get("representation_fixable") else "")
+            # representation_fixable rows are NOT a taxonomy dead-end (a learned projection separates
+            # them) — render that, never `taxonomy(可修)`, so the verdict can't contradict its action.
+            v = ("**representation-fixable**(非 taxonomy 死路)" if f.get("representation_fixable")
+                 else f"**{f['verdict']}**")
             L.append(f"| {pair} | {f['separable_in_embedding']} | {f['sep_err']} {f.get('sep_ci')} | {o} | {c} "
                      f"| {dlt} | {v} | {sup} | {f['action']} |")
         L.append("")
@@ -109,12 +143,16 @@ def render_weakness_report(data: dict) -> str:
     if hr:
         L.append("\n## 佇列命中率(VIX 的建議到底準不準?自我校準)\n")
         L.append("把過去的建議佇列 join 後來的人工裁決:準度越高、趨勢越上 = 這個佇列越值得跟。")
-        L.append("| 佇列 | 預測 | 已解決/發出 | 命中率 | 趨勢 | 註 |")
+        L.append(f"_{_LABEL_HITRATE_NOTE}以覆蓋率呈現。_")
+        L.append("| 佇列 | 預測 | 已解決/發出 | 命中率/覆蓋率 | 趨勢 | 註 |")
         L.append("|---|---|---|---|---|---|")
         for q in hr:
             note = "樣本不足僅供參考" if q.get("insufficient") else ""
-            prec = "-" if q.get("precision") is None else q["precision"]
-            L.append(f"| {q['queue']} | {q['predict']} | {q['resolved']}/{q['emitted']} | {prec} | {q.get('trend')} | {note} |")
+            if q.get("predict") == "label":
+                cell = ("-" if q.get("coverage") is None else f"{q['coverage']}(覆蓋)")
+            else:
+                cell = "-" if q.get("precision") is None else str(q["precision"])
+            L.append(f"| {q['queue']} | {q['predict']} | {q['resolved']}/{q['emitted']} | {cell} | {q.get('trend')} | {note} |")
         L.append("")
 
     if not (pc or cw or ov or cons or hr):
@@ -128,6 +166,26 @@ def _esc(s) -> str:
     return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+def _provenance_html(data: dict) -> str:
+    prov = data.get("provenance") or {}
+    if not prov:
+        return ""
+    parts = []
+    if prov.get("eval_set_hash"):
+        parts.append(f"eval_set={_esc(prov['eval_set_hash'][:8])}")
+    if prov.get("pool_hash"):
+        parts.append(f"pool={_esc(prov['pool_hash'][:8])}")
+    parts.append(f"上份報告 {_esc(prov['prev_report_ts'])}" if prov.get("prev_report_ts") else "首份報告")
+    h = [f"<p style='color:#666;font-size:12px'>出處:{' ｜ '.join(parts)}</p>"]
+    if prov.get("comparable") is False:
+        h.append("<div style='border-left:5px solid #a15c00;padding:8px 12px;margin:8px 0;background:#fff8e6'>"
+                 "⚠ <b>本期 eval set 與上期不同 → mAP/AP 不可與上期直接比較</b>(可能只是 val 變簡單)</div>")
+    elif prov.get("comparable") and prov.get("prev_mAP") is not None and data.get("mAP") is not None:
+        h.append(f"<p style='color:#2e7d32;font-size:13px'>與上期同一 eval set,可比較:mAP "
+                 f"{_esc(prov['prev_mAP'])} → {_esc(data['mAP'])}</p>")
+    return "".join(h)
+
+
 def render_weakness_report_html(data: dict) -> str:
     """Browsable HTML render (same data dict). The consistency-attribution table is the headline
     surface (id='consistency') — this is what the Playwright test verifies renders."""
@@ -139,7 +197,8 @@ def render_weakness_report_html(data: dict) -> str:
          "table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}",
          "th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}",
          "th{background:#f5f5f7}.v{font-weight:700}.proxy{color:#a15c00;background:#fff8e6;padding:8px;border-radius:6px;font-size:12px}",
-         ".tax{color:#b00020}.model{color:#0064b0}.label_noise{color:#7a00b0}.clean{color:#2e7d32}",
+         ".legend{color:#666;font-size:12px;margin:2px 0}.done{color:#999;text-decoration:line-through}",
+         ".tax{color:#b00020}.model{color:#0064b0}.label_noise{color:#7a00b0}.clean{color:#2e7d32}.fixable{color:#0a7a3a}",
          "</style></head><body>"]
     loc, mbi = data.get("loc_gap"), data.get("map_by_iou")
     loc_html = ""
@@ -158,7 +217,8 @@ def render_weakness_report_html(data: dict) -> str:
         h.append(f"<div id='tldr' style='border-left:5px solid {color};padding:8px 12px;margin:10px 0;background:#fafafa'>"
                  f"<b style='color:{color}'>健康度:{_esc(s.get('health'))}</b> ｜ 最弱:{_esc(s.get('weakest') or '-')}"
                  f"<br><b>現在做這個:</b> {_esc(todo)}</div>")
-    h.append(f"<p class='proxy'>{_esc(_PROXY.strip('_'))}(未重訓 → 排序為嫌疑/優先,非實測 mAP;可分性綁定目前 embedding 空間。)</p>")
+    h.append(f"<p class='proxy'>{_esc(_PROXY.strip('_'))};可分性綁定目前 embedding 空間。</p>")
+    h.append(_provenance_html(data))
 
     pc = data.get("per_class") or []
     if pc:
@@ -179,11 +239,15 @@ def render_weakness_report_html(data: dict) -> str:
         for f in cons:
             pair = f"{f['pair'][0]}↔{f['pair'][1]}"
             sup = f"g{f['support']['golden_i']}/{f['support']['golden_j']} ({f['tier']})"
-            cls = {"taxonomy": "tax", "model": "model", "label_noise": "label_noise", "clean": "clean"}.get(f["verdict"], "")
             o = f"{f.get('O_ij')} {f.get('O_ci')}"
             c = (f"{f['C_ij']} {f.get('C_ci')} (n={f['support'].get('n_gt_i')})" if f.get("C_ij") is not None else "-")
             dlt = f"{f['delta']} {f.get('delta_ci')}" if f.get("delta") is not None else "-"
-            vtxt = f["verdict"] + ("(可修)" if f.get("representation_fixable") else "")
+            # rescued -> render as representation-fixable (not taxonomy(可修)); verdict must not contradict action
+            if f.get("representation_fixable"):
+                cls, vtxt = "fixable", "representation-fixable（非 taxonomy 死路）"
+            else:
+                cls = {"taxonomy": "tax", "model": "model", "label_noise": "label_noise", "clean": "clean"}.get(f["verdict"], "")
+                vtxt = f["verdict"]
             h.append(f"<tr><td>{_esc(pair)}</td><td>{_esc(f['separable_in_embedding'])}</td>"
                      f"<td>{_esc(f['sep_err'])} {_esc(f.get('sep_ci'))}</td><td>{_esc(o)}</td><td>{_esc(c)}</td>"
                      f"<td>{_esc(dlt)}</td><td class='v {cls}'>{_esc(vtxt)}</td><td>{_esc(sup)}</td><td>{_esc(f['action'])}</td></tr>")
@@ -200,27 +264,47 @@ def render_weakness_report_html(data: dict) -> str:
                      f"<td>{_esc(r['conf'])}</td><td>{_esc(r.get('fp_type','-'))}</td></tr>")
         h.append("</table>")
 
+    ov = data.get("overturns") or []
+    if ov:
+        h.append("<h2 id='overturns'>自信但嵌入翻盤(無 GT)</h2>")
+        h.append(f"<p class='legend'>{_esc(_WRONGNESS_LEGEND)}</p><table>"
+                 "<tr><th>影像</th><th>類別</th><th>conf</th><th>knn_dist</th><th>dist_thr</th><th>wrongness</th></tr>")
+        for r in ov:
+            h.append(f"<tr><td>{_esc(r['id'])}</td><td>{_esc(r.get('pred_class'))}</td><td>{_esc(r['conf'])}</td>"
+                     f"<td>{_esc(r.get('knn_dist'))}</td><td>{_esc(r.get('dist_thr'))}</td><td>{_esc(round(r['wrongness'], 2))}</td></tr>")
+        h.append("</table>")
+
     q = data.get("queue") or {}
     if q:
         hr_wq = next((hh for hh in (data.get("hit_rate") or []) if hh["queue"] == "weakness_queue"), None)
         wq_note = ""
         if hr_wq:
-            prec = "-" if hr_wq["precision"] is None else hr_wq["precision"]
-            wq_note = f"｜歷史命中率 {prec}(已解決 {hr_wq['resolved']}/{hr_wq['emitted']}{',樣本不足' if hr_wq.get('insufficient') else ''})"
-        h.append(f"<h2 id='queue'>該標哪些(逐弱類佇列,PROXY)</h2><p>完整清單見 weakness_worklist.csv {_esc(wq_note)}</p><ul>")
+            cov = "-" if hr_wq.get("coverage") is None else hr_wq["coverage"]
+            wq_note = f"｜已處理率(coverage) {cov}(已解決 {hr_wq['resolved']}/{hr_wq['emitted']}{',樣本不足' if hr_wq.get('insufficient') else ''})"
+        h.append(f"<h2 id='queue'>該標哪些(逐弱類佇列,PROXY)</h2><p class='legend'>{_esc(_CLOSENESS_LEGEND)}</p>"
+                 f"<p>完整清單見 weakness_worklist.csv {_esc(wq_note)}</p><ul>")
         for c, cands in q.items():
-            h.append(f"<li><b>{_esc(c)}</b>: " + ", ".join(f"{_esc(x['id'])}({_esc(x['closeness'])})" for x in cands) + "</li>")
+            n_res = sum(1 for x in cands if x.get("resolved"))
+            head = f"<b>{_esc(c)}</b>" + (f"(待辦 {len(cands) - n_res} / 已解決 {n_res})" if n_res else f"({len(cands)} 個)") + ": "
+            items = ", ".join(
+                (f"<span class='done'>{_esc(x['id'])}</span>" if x.get("resolved") else _esc(x['id']))
+                + f"({_esc(round(x['closeness'], 2))})" for x in cands)
+            h.append(f"<li>{head}{items}</li>")
         h.append("</ul>")
 
     hr = data.get("hit_rate") or []
     if hr:
-        h.append("<h2 id='hit-rate'>佇列命中率(VIX 建議準不準?自我校準)</h2><table id='hit-rate-table'>"
-                 "<tr><th>佇列</th><th>預測</th><th>已解決/發出</th><th>命中率</th><th>趨勢</th><th>註</th></tr>")
+        h.append("<h2 id='hit-rate'>佇列命中率(VIX 建議準不準?自我校準)</h2>"
+                 f"<p class='legend'>{_esc(_LABEL_HITRATE_NOTE)}以覆蓋率呈現。</p><table id='hit-rate-table'>"
+                 "<tr><th>佇列</th><th>預測</th><th>已解決/發出</th><th>命中率/覆蓋率</th><th>趨勢</th><th>註</th></tr>")
         for qq in hr:
             note = "樣本不足僅供參考" if qq.get("insufficient") else ""
-            prec = "-" if qq.get("precision") is None else qq["precision"]
+            if qq.get("predict") == "label":
+                cell = ("-" if qq.get("coverage") is None else f"{qq['coverage']}(覆蓋)")
+            else:
+                cell = "-" if qq.get("precision") is None else str(qq["precision"])
             h.append(f"<tr><td>{_esc(qq['queue'])}</td><td>{_esc(qq['predict'])}</td>"
-                     f"<td>{_esc(qq['resolved'])}/{_esc(qq['emitted'])}</td><td>{_esc(prec)}</td>"
+                     f"<td>{_esc(qq['resolved'])}/{_esc(qq['emitted'])}</td><td>{_esc(cell)}</td>"
                      f"<td>{_esc(qq.get('trend'))}</td><td>{_esc(note)}</td></tr>")
         h.append("</table>")
 

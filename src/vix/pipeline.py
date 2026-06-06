@@ -1025,6 +1025,35 @@ def queue_hit_rate(cfg, min_resolved=5):
     return {"queues": queues, "n_emissions": len(emissions), "n_resolutions": len(resolutions)}
 
 
+def _resolved_ids(cfg) -> set:
+    """vix_hashes that already have a human resolution (review confirm/false_alarm, or dismiss).
+    Used to mark worklist candidates done so a re-run doesn't ask the engineer to re-do them (L4 —
+    NOT re-ranking: queue order is unchanged, resolved items are only flagged)."""
+    out: set = set()
+    for r in DecisionLog(cfg.decision_log_path).read_all():
+        ev = r.get("event")
+        if ev == "review" and r.get("vix_hash"):
+            out.add(r["vix_hash"])
+        elif ev == "dismiss":
+            out.update(r.get("extra", {}).get("ids", []))
+    return out
+
+
+def _report_provenance(cfg, cur_eval_hash):
+    """Provenance + eval-set comparability for a weakness report (L1/L3). Reads the hash-chained log
+    for the previous eval_ingest's eval_set_hash/mAP and the previous weakness_report timestamp, so
+    the report self-locates on its own trend and flags 'not comparable to last cycle' honestly
+    (a +mAP on a silently-changed val set is the failure this prevents). Pure read, reuses the log."""
+    recs = DecisionLog(cfg.decision_log_path).read_all()
+    evs = [(r.get("extra", {}).get("eval_set_hash"), r.get("extra", {}).get("mAP"))
+           for r in recs if r.get("event") == "eval_ingest"]
+    prev_report_ts = next((r.get("ts_utc") for r in reversed(recs) if r.get("event") == "weakness_report"), None)
+    prev_hash, prev_map = (evs[-2] if len(evs) >= 2 else (None, None))  # current eval = last logged eval_ingest
+    comparable = None if (not cur_eval_hash or prev_hash is None) else (prev_hash == cur_eval_hash)
+    return {"eval_set_hash": cur_eval_hash, "prev_report_ts": prev_report_ts,
+            "comparable": comparable, "prev_mAP": (prev_map if comparable else None)}
+
+
 def report_trend(cfg, classes=None):
     """Per-class AP / mAP / health over time, read from the hash-chained decision log (Tier 2).
     Answers 'did my curation move this class's AP across rounds?' offline + auditable; AP deltas are
@@ -1260,12 +1289,19 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     _log_queue(cfg, "weakness_queue", [c["id"] for cands in data["queue"].values() for c in cands], "label")
     data["hit_rate"] = queue_hit_rate(cfg)["queues"]
 
+    resolved = _resolved_ids(cfg)  # L4: flag candidates a human already actioned (re-runs shouldn't re-ask)
+    for cands in data["queue"].values():
+        for c in cands:
+            c["resolved"] = c["id"] in resolved
+    data["provenance"] = _report_provenance(cfg, (ev or {}).get("eval_set_hash"))  # L1/L3
+
     # TL;DR health verdict + "do this now" (Tier 1: scannability)
     worst = data["per_class"][0] if data["per_class"] else None
     bad_consist = [f for f in data["consistency"]
                    if f["verdict"] in ("taxonomy", "label_noise") and not f.get("representation_fixable")
                    and f["tier"] == "supported"]
-    n_queue = sum(len(v) for v in data["queue"].values())
+    rep_fix = [f for f in data["consistency"] if f.get("representation_fixable")]
+    n_open = sum(1 for v in data["queue"].values() for c in v if not c.get("resolved"))  # L4: open != emitted
     n_cw = len(data["confident_wrong"])
     if (worst and worst["ap"] < 0.5) or bad_consist:
         health = "RED"
@@ -1276,8 +1312,11 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     todo = []
     if bad_consist:
         todo.append(f"重新檢視 {len(bad_consist)} 個類別對定義:" + ", ".join("↔".join(f["pair"]) for f in bad_consist))
-    if n_queue:
-        todo.append(f"標 {n_queue} 個候選(見佇列)")
+    if rep_fix:  # A2: a representation problem -> adapt-embedding is the lever; labeling is the WRONG first move
+        todo.append("套用 adapt-embedding:已 CV 驗證可分開 "
+                    + ", ".join("↔".join(f["pair"]) for f in rep_fix) + "(表徵問題,標註不是這裡的槓桿)")
+    if n_open:
+        todo.append(f"標 {n_open} 個候選(見佇列)")
     if n_cw:
         todo.append(f"覆核 {n_cw} 個自信誤報")
     data["summary"] = {"health": health, "todo": todo,
@@ -1316,6 +1355,9 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     DecisionLog(cfg.decision_log_path).append(
         "weakness_report", decision=data["summary"]["health"],
         extra={"mAP": data["mAP"], "health": data["summary"]["health"], "batch": batch,
+               "eval_set_hash": data["provenance"].get("eval_set_hash"),       # L1: self-locating on the trend
+               "prev_report_ts": data["provenance"].get("prev_report_ts"),
+               "eval_comparable": data["provenance"].get("comparable"),         # L3: vs last cycle
                "weak_classes": [r["cls"] for r in data["per_class"][:top_classes]],
                "consistency": [f["verdict"] for f in data["consistency"]][:10],
                "worklist_n": len(wl_rows), "tagged": bool(worklist),

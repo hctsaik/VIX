@@ -92,6 +92,7 @@ def main():
     for h, outcome in (("e_fp0", "false_alarm"), ("e_fp1", "false_alarm"), ("e_fp2", "false_alarm"),
                        ("e_b0", "false_alarm"), ("e_b1", "confirmed")):
         dl.append("review", vix_hash=h, decision=outcome)
+    dl.append("review", vix_hash="cand_b0", decision="confirmed")  # L4: a queue candidate already actioned
 
     r = pipeline.weakness_report(ad, cfg)
     out = ROOT / "weakness_report.html"

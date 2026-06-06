@@ -44,4 +44,5 @@
 - ✅ **趨勢(以 audit log 為準,非 snapshot 膨脹)**:`vix ap-trend` 從 hash 鏈日誌讀 `eval_ingest`(mAP/per-class AP/`eval_set_hash`)+ `weakness_report`(health)→ 逐類 AP 軌跡 + Δ + 健康度軌跡;**eval set 變過會標記「不可直接比較」**(避免「val 變簡單」假漲)。答「過去幾輪策展有沒有讓 bubble 變好」,離線可查、可稽核。`core/trend.py`。
 - 關於 offline 價值的取捨:**hit-rate 回授「重排」佇列暫不做** —— 對小型/離線/演進中的資料,跨輪累積慢 + 非平穩 + 回授放大噪音,邊際小於風險;測量+顯示(已做)才是 offline 的真價值。
 - ✅ **FiftyOne App 面板**:`@vix/review` plugin 新增 `VixReportPanel`(`vix app` → 開「VIX: 弱點/一致性報告」面板),把 weakness/consistency 報告以 markdown 呈現在 App 內,附「重新整理」「標記工作清單」按鈕(後者打 vixq:* → saved views 可點)。FiftyOne 1.16 Panel API;離線驗證面板註冊(`operator_exists` True),瀏覽器渲染由 `vix verify-gui` 在 live App 驗。
+- ✅ **報告再強化(第三輪多代理 → 已實作)**:對抗 + 讀碼後修了 4 個誠實缺陷(H1a rescued 那格不再渲染自相矛盾的 `taxonomy(可修)`、H2 label 佇列以覆蓋率呈現而非結構性 1.0、H3 closeness/wrongness 加圖例+2dp、H4 PROXY 去重)+ 4 個工作流(A2 歸因排序 todo、L1 出處戳記、L3 eval-set 不可比較橫幅、L4 已處理感知佇列)。**並否決**了會讓安全閘變鈍/不可行的統計再造(TOST 降級、閘門多重比較校正、bootstrap sep_err、AP 誤差帶)。見 [report-improvements.md](report-improvements.md);測試 `tests/test_report_improvements.py`。
 - 仍待:snapshot 綁 content_hash↔mAP(嚴格 release registry)。
