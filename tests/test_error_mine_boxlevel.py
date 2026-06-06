@@ -52,3 +52,18 @@ def test_error_mine_falls_back_when_no_box_matches(tmp_path):
         "vix_hash": "e", "gt": [{"label": "a", "bbox": [0.8, 0.8, 0.2, 0.2]}], "pred": []}))
     mined = pipeline.error_mine(ad, cfg, top=5)
     assert any(m["id"].split(":")[0] == "c0" for m in mined)  # degrades cleanly, no crash
+
+
+def test_error_mine_batch_scope(tmp_path):
+    cfg = Config(workspace=tmp_path / "ws")
+    cfg.ensure_dirs()
+    ad = InMemoryAdapter()
+    ad.seed("e", "e.png", [Detection("a", 0.9, BBox(0.5, 0.5, 0.2, 0.2), embedding=np.array([1.0, 0.0]))], tags=[Tag.EVAL])
+    ad.seed("c_in", "c.png", [Detection("a", 0.9, BBox(0.5, 0.5, 0.2, 0.2), embedding=np.array([1.0, 0.0]))], tags=["batch:w23"])
+    ad.seed("c_out", "c.png", [Detection("a", 0.9, BBox(0.5, 0.5, 0.2, 0.2), embedding=np.array([1.0, 0.0]))], tags=[])
+    pipeline.eval_ingest(ad, cfg, _write(cfg, {
+        "vix_hash": "e", "gt": [{"label": "a", "bbox": [0.5, 0.5, 0.4, 0.4]}], "pred": []}))
+    ids_all = {m["id"].split(":")[0] for m in pipeline.error_mine(ad, cfg, top=10)}
+    ids_b = {m["id"].split(":")[0] for m in pipeline.error_mine(ad, cfg, top=10, batch="w23")}
+    assert {"c_in", "c_out"} <= ids_all                       # unscoped: both candidates
+    assert "c_in" in ids_b and "c_out" not in ids_b           # batch scope: only this batch's candidates

@@ -847,6 +847,14 @@ def queue_hit_rate(cfg, min_resolved=5):
     return {"queues": queues, "n_emissions": len(emissions), "n_resolutions": len(resolutions)}
 
 
+def report_trend(cfg, classes=None):
+    """Per-class AP / mAP / health over time, read from the hash-chained decision log (Tier 2).
+    Answers 'did my curation move this class's AP across rounds?' offline + auditable; AP deltas are
+    flagged not-comparable if the eval set changed across the series."""
+    from .core.trend import eval_trend
+    return eval_trend(DecisionLog(cfg.decision_log_path).read_all(), classes)
+
+
 def _match_box_emb(box, det_embs, thr):
     """Best stored-detection embedding whose box IoU>=thr with the (external) error box, else None.
     The eval JSON's pred/GT boxes carry no embedding and may come from a different run, so we
@@ -860,7 +868,7 @@ def _match_box_emb(box, det_embs, thr):
     return best
 
 
-def error_mine(adapter, cfg, top=20, emb_match_iou=0.5, fn_match_iou=0.1, for_class=None):
+def error_mine(adapter, cfg, top=20, emb_match_iou=0.5, fn_match_iou=0.1, for_class=None, batch=None):
     """Rank unlabeled candidates by closeness to the model's val FP/FN error *regions*, so
     labeling effort lands on the model's demonstrated failures (not just novelty).
 
@@ -913,7 +921,8 @@ def error_mine(adapter, cfg, top=20, emb_match_iou=0.5, fn_match_iou=0.1, for_cl
     proj = _active_projection(cfg)  # domain-adapted embedding (gate-enabled, dim>=2) -> sharper ranking
     EM = np.vstack(err_emb)
     E = _l2norm(_proj_tx(proj, EM) if proj else EM)
-    cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL, Tag.REJECTED])
+    cands = _image_items(adapter, want_tags=([f"batch:{batch}"] if batch else None),  # batch scope: "label from THIS batch"
+                         exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL, Tag.REJECTED])
     tag = ",已套用 domain-adapted 投影" if proj else ""
     ranked = []
     for it in cands:
@@ -969,7 +978,7 @@ def box_qa(adapter, cfg, top=50, min_support=8):  # T1c per-box geometry QA (rea
     return issues[:top]
 
 
-def hardneg(adapter, cfg, top=50, mode="auto"):
+def hardneg(adapter, cfg, top=50, mode="auto", batch=None):
     """Confidently-wrong mining — the "YOLO most confident yet wrong" weakness lens (ported from SAFE).
     mode 'auto': GT (confirmed eval-FPs ranked by conf) if eval_results.json has conf-bearing fp_detail,
     else GT-free (high-conf detections the embedding overturns). 'gt'/'gt_free' force a mode.
@@ -993,6 +1002,8 @@ def hardneg(adapter, cfg, top=50, mode="auto"):
     for h, _s, ds, tags in adapter.samples():
         if set(tags) & {Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL, Tag.REJECTED}:
             continue  # only unlabeled / incoming detections are candidates for "confidently wrong"
+        if batch and f"batch:{batch}" not in tags:  # batch scope
+            continue
         for d in ds:
             ct = policy.thresholds.get(d.label)
             if d.embedding is None or ct is None:
@@ -1005,7 +1016,7 @@ def hardneg(adapter, cfg, top=50, mode="auto"):
     return {"mode": "gt_free", "rows": rows}
 
 
-def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=None, worklist=False):
+def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=None, worklist=False, batch=None):
     """Roll VIX's model-validated signals + hardneg + a per-weak-class label queue into ONE
     human-readable 'where YOLO is weak / go label these' Markdown report (model-loop-v2). Two-mode:
     GT block (per-class AP/confusion/loc_gap/FP-FN typing + confidently-wrong eval-FPs) when a val
@@ -1050,13 +1061,14 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
             if r["ap"] >= 1.0:
                 continue
             try:
-                cands = error_mine(adapter, cfg, top=queue_per_class, for_class=r["cls"])
+                cands = error_mine(adapter, cfg, top=queue_per_class, for_class=r["cls"], batch=batch)
             except (ValueError, OSError):
                 cands = []
             if cands:
                 data["queue"][r["cls"]] = [{"id": x["id"], "closeness": x["closeness"]} for x in cands]
+    data["batch"] = batch
     try:  # GT-free overturns: best-effort (needs calibrated thresholds + unlabeled detections)
-        data["overturns"] = hardneg(adapter, cfg, top=15, mode="gt_free")["rows"]
+        data["overturns"] = hardneg(adapter, cfg, top=15, mode="gt_free", batch=batch)["rows"]
     except (ValueError, OSError):
         pass
 
@@ -1125,7 +1137,7 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     html_out.write_text(render_weakness_report_html(data), encoding="utf-8")
     DecisionLog(cfg.decision_log_path).append(
         "weakness_report", decision=data["summary"]["health"],
-        extra={"mAP": data["mAP"], "health": data["summary"]["health"],
+        extra={"mAP": data["mAP"], "health": data["summary"]["health"], "batch": batch,
                "weak_classes": [r["cls"] for r in data["per_class"][:top_classes]],
                "consistency": [f["verdict"] for f in data["consistency"]][:10],
                "worklist_n": len(wl_rows), "tagged": bool(worklist),

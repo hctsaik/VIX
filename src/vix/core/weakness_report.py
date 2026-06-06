@@ -27,8 +27,9 @@ def render_weakness_report(data: dict) -> str:
             L.append(">\n> **現在做這個:** " + " ｜ ".join(s["todo"]))
         L.append("")
     L.append(f"_{_PROXY.strip('_')}(未重訓 → 排序為嫌疑/優先,非實測 mAP;可分性綁定目前 embedding 空間。)_\n")
-    L.append("模式:**%s** %s\n" % (
-        mode, "(有標註 val set → 以 GT 區塊為主)" if mode == "gt" else "(GT-free → 靠嵌入翻盤/代理訊號)"))
+    bscope = f"　範圍:**batch {data['batch']}**(佇列/翻盤僅看這批)" if data.get("batch") else ""
+    L.append("模式:**%s** %s%s\n" % (
+        mode, "(有標註 val set → 以 GT 區塊為主)" if mode == "gt" else "(GT-free → 靠嵌入翻盤/代理訊號)", bscope))
     if data.get("mAP") is not None:
         loc, mbi = data.get("loc_gap"), data.get("map_by_iou")
         if loc is not None:
@@ -147,8 +148,9 @@ def render_weakness_report_html(data: dict) -> str:
             loc_html = f" ｜ loc_gap = {_esc(loc)}" + (f" (mAP@0.5={_esc(mbi.get('0.5'))} vs @0.75={_esc(mbi.get('0.75'))})" if mbi else "")
         else:
             loc_html = " ｜ loc_gap N/A(單一 IoU,未評估定位)"
+    bscope = f" ｜ 範圍:<b>batch {_esc(data['batch'])}</b>(佇列/翻盤僅看這批)" if data.get("batch") else ""
     h.append(f"<h1>YOLO 弱點報告</h1><p>模式:<b>{_esc(mode)}</b>"
-             + (f" ｜ mAP@0.5 = <b>{_esc(data['mAP'])}</b>" if data.get("mAP") is not None else "") + loc_html + "</p>")
+             + (f" ｜ mAP@0.5 = <b>{_esc(data['mAP'])}</b>" if data.get("mAP") is not None else "") + loc_html + bscope + "</p>")
     s = data.get("summary") or {}
     if s:  # TL;DR health banner
         color = {"RED": "#b00020", "AMBER": "#a15c00", "GREEN": "#2e7d32"}.get(s.get("health"), "#555")

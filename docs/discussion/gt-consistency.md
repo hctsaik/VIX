@@ -40,4 +40,7 @@
 ## Tier 2 應用(進行中)
 - ✅ **一致性判定接進 gate**:`pre_train_gate` 在**受保護類別對**(來自 `set-eval-baseline --protect`)被判 **supported 的 taxonomy/label_noise** 且**非** representation_fixable 時 → **NO-GO**(類別定義疑有問題,別匯出/重訓)。opt-in、需 baseline 的 protected 集 + eval;報告從「諮詢」升級為**能擋退步**。
 - ✅ **App 可點工作清單**:`weakness-report --worklist` 打 `vixq:*` tag → `vix app` 自動把它們建成 **saved views**(`pipeline.worklist_views`),清單從「讀 vix_hash」變成「在 App 內點開該類候選」。
-- 仍待:完整 FiftyOne **App 面板**(把報告表格嵌進 App)、報告版本化進 **snapshot**(可查趨勢+稽核)、**hit-rate 回授重排佇列**、批次範圍。
+- ✅ **批次範圍**:`weakness-report/error-mine/hardneg --batch w23` 把「該標/該清什麼」的佇列 + 翻盤**只看這批**(GT 模型弱點維持全域,因為那是模型本質、與批次無關)。答週用問題「**這一批**要清什麼」。
+- ✅ **趨勢(以 audit log 為準,非 snapshot 膨脹)**:`vix ap-trend` 從 hash 鏈日誌讀 `eval_ingest`(mAP/per-class AP/`eval_set_hash`)+ `weakness_report`(health)→ 逐類 AP 軌跡 + Δ + 健康度軌跡;**eval set 變過會標記「不可直接比較」**(避免「val 變簡單」假漲)。答「過去幾輪策展有沒有讓 bubble 變好」,離線可查、可稽核。`core/trend.py`。
+- 關於 offline 價值的取捨:**hit-rate 回授「重排」佇列暫不做** —— 對小型/離線/演進中的資料,跨輪累積慢 + 非平穩 + 回授放大噪音,邊際小於風險;測量+顯示(已做)才是 offline 的真價值。
+- 仍待:完整 FiftyOne **App 面板**(把報告表格嵌進 App);snapshot 綁 content_hash↔mAP(嚴格 release registry)。

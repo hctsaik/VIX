@@ -488,7 +488,13 @@ vix adapt-embedding --save --enable  # gate=GO 才寫啟用標記;之後 error-m
   <li><b>命中定義依佇列預測</b>:<code>hardneg</code>(預測「錯」)→ 被 reject/dismiss 才算中;<code>bank hard-positive</code>(預測「defect」)→ 被 confirm 才算中;<code>label</code> 佇列 → 任何裁決都算「被採納」(命中率=採納率)。</li>
   <li><b>趨勢</b>:逐次發出的命中率序列 —— 上升 = 佇列越來越準,你越該跟著它標。</li>
 </ul>
-<div class="warn">這是「放大步 #1」的 v1:測量 + 趨勢 + 併進報告(零額外儀式,你本來就會開 weakness-report)。把命中率<b>實際回授去重排下一輪佇列</b>(低命中率佇列降權)是後續;目前先讓你看到、可信任。需要 <code>resolve</code>/<code>dismiss</code> 裁決才有訊號。</div>
+<div class="warn">這是「放大步 #1」的 v1:測量 + 趨勢 + 併進報告(零額外儀式,你本來就會開 weakness-report)。需要 <code>resolve</code>/<code>dismiss</code> 裁決才有訊號。<b>注意</b>:把命中率<b>自動回授去重排佇列</b>對小型/離線/演進資料邊際小於風險(跨輪累積慢、非平穩、回授放大噪音),故<b>不做</b>;測量+顯示才是 offline 真價值。</div>
+
+<h3>批次範圍 + AP 趨勢(週用 / 跨輪)</h3>
+<pre><code>vix weakness-report --batch w23   # 「這一批」要清/標什麼(佇列+翻盤只看 batch:w23;模型弱點維持全域)
+vix error-mine --batch w23        # 同理,只排這批的候選
+vix ap-trend [--class bubble]     # 從 audit log 看 per-class AP / mAP / 健康度跨輪軌跡(離線、可稽核)</code></pre>
+<p><b>批次範圍</b>答「這一批能不能進、要清什麼」(每週真實問題)。<b>ap-trend</b> 從 hash 鏈日誌讀你歷次 <code>eval-ingest</code> 的 per-class AP → 軌跡 + Δ,答「過去幾輪策展有沒有讓 bubble 變好」;<b>eval set 變過會標「不可直接比較」</b>(避免 val 變簡單的假漲)。不需 VIX 重訓 —— AP 數字來自你定期外部 eval 餵進來,VIX 離線存+讀。</p>
 
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>

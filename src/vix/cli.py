@@ -264,6 +264,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sevi.add_argument("--iou", type=float, default=0.5)
     sem = sub.add_parser("error-mine", help="rank unlabeled candidates nearest the model's eval FP/FN errors")
     sem.add_argument("--top", type=int, default=20)
+    sem.add_argument("--batch", default=None, help="scope candidates to a batch tag (e.g. w23): 'label from THIS batch'")
     seb = sub.add_parser("set-eval-baseline", help="freeze current eval as the challenge-guard baseline (gate hard-blocks on mAP / protected-class AP regression)")
     seb.add_argument("--protect", action="append", default=[], metavar="CLASS", help="protected class (repeatable); its AP drop hard-blocks the gate, even at low support (fail-closed)")
     seb.add_argument("--protect-drop", type=float, default=0.05, help="max allowed AP drop for protected classes")
@@ -273,11 +274,13 @@ def _build_parser() -> argparse.ArgumentParser:
     shn = sub.add_parser("hardneg", help="rank the detector's most confident-yet-wrong detections (GT eval-FP, or GT-free embedding overturn)")
     shn.add_argument("--top", type=int, default=50)
     shn.add_argument("--mode", choices=["auto", "gt", "gt_free"], default="auto")
+    shn.add_argument("--batch", default=None, help="GT-free mode: scope to a batch tag (e.g. w23)")
     swr = sub.add_parser("weakness-report", help="roll per-class AP + confusion + FP/FN typing + loc_gap + hardneg + consistency into a human-readable report (writes .md + .html)")
     swr.add_argument("--top-classes", type=int, default=5)
     swr.add_argument("--queue-per-class", type=int, default=10)
     swr.add_argument("--out", default=None)
     swr.add_argument("--worklist", action="store_true", help="also tag worklist samples (vixq:*) so the FiftyOne App can filter them; weakness_worklist.csv is always written")
+    swr.add_argument("--batch", default=None, help="scope the label queue + overturns to a batch tag (e.g. w23): 'what to clear in THIS batch'")
     scon = sub.add_parser("consistency", help="GT x embedding attribution: per class-pair separability + confusion-overlap 2x2 (taxonomy/model/label_noise) — advisory, CI-gated")
     scon.add_argument("--max-pairs", type=int, default=20)
     sae = sub.add_parser("adapt-embedding", help="learn a supervised LDA projection of frozen DINOv2 from golden GT; report which 'inseparable' pairs become separable (CV'd) — offline, not YOLO training")
@@ -286,6 +289,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sae.add_argument("--max-pca", type=int, default=64)
     sqhr = sub.add_parser("queue-hit-rate", help="did VIX's suggestion queues turn out right? join past emissions with human resolutions -> per-queue precision + trend (self-calibration)")
     sqhr.add_argument("--min-resolved", type=int, default=5)
+    strd = sub.add_parser("ap-trend", help="per-class AP / mAP / health over time from the audit log (did curation help over rounds? offline, auditable)")
+    strd.add_argument("--class", dest="cls", default=None, help="only this class")
     sba = sub.add_parser("bank-audit", help="multi-bank Top-K embedding audit of low-conf proposals -> defect/reflection/unknown (advisory)")
     sba.add_argument("--defect-tag", default="golden")
     sba.add_argument("--reflection-tag", default="rejected")
@@ -729,7 +734,7 @@ def _main(argv: list[str] | None = None) -> int:
               "用 vix error-mine 反查最該標的候選")
 
     elif args.cmd == "error-mine":
-        ranked = pipeline.error_mine(adapter, cfg, top=args.top)
+        ranked = pipeline.error_mine(adapter, cfg, top=args.top, batch=args.batch)
         for r in ranked:
             print(f"{r['id']}  closeness={r['closeness']}  {r['why']}")
         if not ranked:
@@ -750,7 +755,7 @@ def _main(argv: list[str] | None = None) -> int:
             print("無框品質問題(或 golden 框數不足以建立各類包絡)")
 
     elif args.cmd == "hardneg":
-        r = pipeline.hardneg(adapter, cfg, top=args.top, mode=args.mode)
+        r = pipeline.hardneg(adapter, cfg, top=args.top, mode=args.mode, batch=args.batch)
         print(f"hardneg 模式={r['mode']}({len(r['rows'])} 筆「自信卻錯」,高→低):")
         for row in r["rows"]:
             print(f"  {row['id']}  {row.get('pred_class')}  wrongness={row['wrongness']}  {row['why']}")
@@ -760,7 +765,8 @@ def _main(argv: list[str] | None = None) -> int:
 
     elif args.cmd == "weakness-report":
         r = pipeline.weakness_report(adapter, cfg, top_classes=args.top_classes,
-                                     queue_per_class=args.queue_per_class, out_path=args.out, worklist=args.worklist)
+                                     queue_per_class=args.queue_per_class, out_path=args.out,
+                                     worklist=args.worklist, batch=args.batch)
         d = r["data"]; s = d.get("summary", {})
         print(f"YOLO 弱點報告 [健康度 {s.get('health')}]({d['mode']} 模式)-> {r['path']}")
         if d.get("mAP") is not None:
@@ -819,6 +825,21 @@ def _main(argv: list[str] | None = None) -> int:
         if not r["queues"]:
             print("  無資料(先跑 error-mine/hardneg/weakness-report 發出佇列,並有 resolve/dismiss 裁決)")
         print("  註:只算『已解決』的 id(誠實);label 佇列命中率=被採納率;趨勢上升=佇列越來越準")
+
+    elif args.cmd == "ap-trend":
+        t = pipeline.report_trend(cfg, classes=([args.cls] if args.cls else None))
+        print(f"趨勢({t['n_evals']} 次 eval-ingest):{t['note']}")
+        if t["mAP_series"]:
+            print("  mAP: " + " → ".join(str(v) for _ts, v in t["mAP_series"]))
+        for c, d in sorted(t["per_class_delta"].items(), key=lambda kv: kv[1]):
+            series = " → ".join(str(v) for _ts, v in t["per_class"][c] if v is not None)
+            arrow = "↑進步" if d > 0 else ("↓退步" if d < 0 else "→持平")
+            print(f"  {c}: {series}  (Δ{d} {arrow})")
+        hs = [v for _ts, v in t["health_series"] if v]
+        if hs:
+            print("  健康度軌跡: " + " → ".join(hs))
+        if not t["n_evals"]:
+            print("  (無 eval-ingest 紀錄;先 vix eval-ingest 幾次以累積趨勢)")
 
     return 0
 
