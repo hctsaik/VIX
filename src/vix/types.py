@@ -32,6 +32,8 @@ class Tag:
     ANCHOR = "anchor"
     REJECTED = "rejected"
     EVAL = "eval"  # held-out evaluation/regression set: never calibrated/routed/exported on
+    PROPOSAL = "proposal"        # low-confidence YOLO proposal under bank-audit (isolated from golden routing)
+    HARD_POSITIVE = "hard_positive"  # bank-audit defect-like/unknown staging set (human-confirmed -> golden)
 
 
 @dataclass

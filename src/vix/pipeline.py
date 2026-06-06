@@ -770,6 +770,100 @@ def error_mine(adapter, cfg, top=20):
     return ranked[:top]
 
 
+def bank_audit(adapter, cfg, defect_tag=Tag.GOLDEN, reflection_tag=Tag.REJECTED, normal_tag=None,
+               conf_lo=0.05, conf_hi=0.25, tau=0.10, k=None, novelty_radius=0.30,
+               dedup_distance=0.05, top=50):
+    """Multi-bank Top-K embedding audit of LOW-CONFIDENCE proposals (design of record:
+    docs/discussion/bank-audit-design.md). Banks are built from tags (defect=golden,
+    reflection=rejected, optional normal); each conf-band detection is voted across the
+    calibrated banks -> defect_like/reflection_like/normal_like/unknown. Verdict is an
+    ADVISORY field (never overrides routing); defect_like/unknown are staged as
+    hard_positive (human-confirmed -> golden, never auto-promoted)."""
+    import hashlib
+    from collections import Counter
+
+    from .core.bank_audit import bank_vote, build_bank_scales, loose_nms
+    from .embedding.dinov2 import MODEL_KEY
+
+    k = k or cfg.knn_k
+    # 1. build banks from tags (pooled detection-crop embeddings)
+    banks: dict[str, np.ndarray] = {}
+    bank_label_map: dict[str, str] = {}
+    specs = [(defect_tag, "defect_like"), (reflection_tag, "reflection_like")]
+    if normal_tag:
+        specs.append((normal_tag, "normal_like"))
+        if normal_tag == Tag.PASS:
+            log.warning("bank-audit: normal 銀行用 raw 'pass'(未驗證);建議用已驗證 normal tag")
+    else:
+        log.warning("bank-audit: 無 normal 銀行;退化為 defect/reflection 二銀行 + novelty radius")
+    for tag, verdict in specs:
+        emb = _emb_by_class(adapter, {tag})
+        pooled = np.vstack(list(emb.values())) if emb else np.zeros((0, 1))
+        if pooled.shape[0] == 0:
+            log.warning("bank-audit: 銀行 '%s' 為空,略過", tag)
+            continue
+        banks[tag] = pooled
+        bank_label_map[tag] = verdict
+    if defect_tag not in banks:
+        raise ValueError("bank-audit: defect 銀行(預設 golden)為空,無法審查")
+
+    # 2. bank hygiene: warn on near-duplicate density that would bias the vote
+    for tag in banks:
+        dups = near_duplicate_groups(_image_items(adapter, want_tags=[tag]), dedup_distance)
+        if dups:
+            log.warning("bank-audit: 銀行 '%s' 有 %d 群近重複,會偏壓投票密度;建議先 dedup + audit-labels", tag, len(dups))
+
+    # 3. per-bank calibration scales (build-time, once)
+    scales = build_bank_scales(banks, k)
+    bank_fp = hashlib.sha256(
+        ("|".join(f"{t}:{banks[t].shape[0]}" for t in sorted(banks)) + MODEL_KEY).encode()
+    ).hexdigest()[:12]
+
+    # 4. collect low-conf proposals (conf band, non-reference samples), de-dup per image
+    ref = {Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL, Tag.REJECTED}
+    results = []
+    for h, _s, dets, tags in adapter.samples():
+        if ref & set(tags):
+            continue
+        band = [d for d in dets if d.embedding is not None and conf_lo <= d.confidence < conf_hi]
+        if not band:
+            continue
+        adapter.apply_tags(h, [Tag.PROPOSAL])  # isolate from golden routing/KPIs
+        best = None
+        sample_verdicts = []
+        for d in loose_nms(band):
+            v = bank_vote(np.asarray(d.embedding, float), banks, scales, bank_label_map, k, tau, novelty_radius)
+            row = {"id": h, "conf": round(d.confidence, 3), "verdict": v.verdict,
+                   "winning_bank": v.winning_bank, "margin": v.margin, "min_raw_dist": v.min_raw_dist,
+                   "per_bank": v.per_bank, "topk_evidence": v.topk_evidence}
+            results.append(row)
+            if best is None:
+                best = v  # representative (first = highest-conf after NMS) drives the advisory field
+            sample_verdicts.append(v.verdict)
+        if best is not None:
+            adapter.attach_fields(h, {"bank_verdict": best.verdict,
+                                      "bank_evidence": {"winning_bank": best.winning_bank,
+                                                        "margin": best.margin, "min_raw_dist": best.min_raw_dist}})
+            # stage if ANY proposal on the image is defect-like/novel (not only the representative box)
+            if any(sv in ("defect_like", "unknown") for sv in sample_verdicts):
+                adapter.apply_tags(h, [Tag.HARD_POSITIVE])
+
+    rank = {"defect_like": 0, "unknown": 1, "reflection_like": 2, "normal_like": 3}
+    results.sort(key=lambda r: (rank.get(r["verdict"], 9), -r["margin"]))
+    counts = dict(Counter(r["verdict"] for r in results))
+    DecisionLog(cfg.decision_log_path).append(
+        "bank_audit", decision=str(len(results)),
+        extra={"counts": counts, "bank_fingerprint": bank_fp,
+               "banks": {t: int(banks[t].shape[0]) for t in banks},
+               "embedding_backend": cfg.embedding_backend},
+    )
+    log.info("bank_audit: %d proposals -> %s (banks=%s fp=%s)",
+             len(results), counts, {t: banks[t].shape[0] for t in banks}, bank_fp)
+    return {"counts": counts, "n_proposals": len(results), "fingerprint": bank_fp,
+            "banks": {t: int(banks[t].shape[0]) for t in banks},
+            "results": results[:top] if top else results}
+
+
 # --- round-4 additions (V1–V10) ------------------------------------------
 
 def run_pipeline(adapter, cfg, input_folder=None, batch_id="run", weights=None,

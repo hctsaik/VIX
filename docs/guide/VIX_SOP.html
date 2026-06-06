@@ -90,6 +90,7 @@
   <a href="#b4">B4. App 內 @vix/review</a>
   <a href="#b5">B5. 稽核帳本 <span class="r">參考</span></a>
   <a href="#b6">B6. 進階診斷指令 <span class="r">參考</span></a>
+  <a href="#b7">B7. 模型閉環:eval-ingest / bank-audit</a>
   <h2>實戰 &amp; 附錄</h2>
   <a href="#scenario">C. 標準情境 SOP</a>
   <a href="#explore">D. 探索更多 / 排解</a>
@@ -357,6 +358,34 @@ vix routing-diff           # 最近兩次路由之間有什麼改變</code></pre
   <tr><td rowspan="2">版本 / 一致性</td><td><code>snapshot</code> / <code>restore</code></td><td>用內容雜湊做不可變版本快照 / 還原。</td></tr>
   <tr><td><code>parity</code> / <code>reviewer-audit</code></td><td>跨組(如跨廠)效能一致性;覆核員自我一致性。</td></tr>
 </table>
+
+<!-- ============ B7 ============ -->
+<h2 class="sec" id="b7">B7. 模型閉環:<code>eval-ingest</code> + <code>bank-audit</code> <span class="tag vix">VIX 客製</span></h2>
+<p>VIX 預設「對模型是盲的」(訊號都是信心/embedding 代理)。這兩個指令把<b>模型實際表現</b>接回來。</p>
+
+<h3>eval-ingest — 回灌驗證集,算 per-class AP / 混淆 / FP-FN</h3>
+<pre><code>vix eval-ingest val_results.jsonl [--iou 0.5]   # 每行一張:{vix_hash, gt:[{label,bbox}], pred:[{label,bbox,conf}]}
+vix error-mine --top 20                          # 把 FP/FN 投影回 embedding,排序最該標的未標註候選</code></pre>
+<p>產出 <code>per-class AP / mAP / 混淆矩陣(truth→pred)/ 逐張 FP/FN</code>,寫入 <code>eval_results.json</code>、把 <code>eval_fp</code>/<code>eval_fn</code> 掛回樣本、記入稽核。<b>它讓既有每個啟發式都升級成「模型驗證過」</b>:per-class AP 告訴你哪類該補、混淆告訴你哪兩類在混、FN 反查直接餵進覆核→golden(等於用既有資料做硬例挖掘)。</p>
+
+<h3>bank-audit — 低信心 proposal 的三銀行 embedding 審查</h3>
+<p>對應「Low-confidence YOLO Proposal Mining」提案:不再只信 YOLO 信心,把<b>低信心候選框</b>交給 DINO 特徵空間,用 Top-K 鄰居在三個參考銀行投票。</p>
+<pre><code>vix bank-audit --conf-lo 0.05 --conf-hi 0.25 --tau 0.10 [--normal-tag verified_normal] --top 50</code></pre>
+<table>
+  <tr><th>銀行(可設定 tag)</th><th>來源</th></tr>
+  <tr><td>Defect(<code>--defect-tag</code>,預設 <code>golden</code>)</td><td>confirmed bubble/dripping</td></tr>
+  <tr><td>Reflection(<code>--reflection-tag</code>,預設 <code>rejected</code>)</td><td>confirmed reflection false alarm</td></tr>
+  <tr><td>Normal(<code>--normal-tag</code>,選用)</td><td>verified normal;<b>未提供→退化二銀行 + novelty radius</b>;用 raw <code>pass</code> 會警告</td></tr>
+</table>
+<p>對每個信心區間內的候選框:各銀行<b>各自 Top-K + 各銀行自身距離校準</b>(避免大銀行靠密度灌票)→ <code>s_b=exp(-d_b/scale_b)</code>;兩道 abstain 閘(novelty radius、margin <code>--tau</code>)→ 判 <code>defect_like / reflection_like / normal_like / unknown</code>。</p>
+<ul>
+  <li><code>bank_verdict</code>/<code>bank_evidence</code> 是<b>諮詢欄位</b>,<b>絕不覆寫 routing_decision</b>。</li>
+  <li><code>defect_like</code> 或 <code>unknown</code>(novel/blind-spot)→ 打 <code>hard_positive</code> staging tag,<b>人工 <code>resolve --confirm</code>→golden,不自動晉升</b>。</li>
+  <li>低信心 proposal 打 <code>proposal</code> tag 隔離,<b>不污染 golden 路由/KPI</b>;每次記 bank 指紋。</li>
+  <li>在 App Embeddings 面板按相似度排,即可看 Top-K 證據覆判(這就是 proposal 的 Review UI)。</li>
+</ul>
+<div class="warn"><b>離線 POC 流程(非 production alarm)</b>:① YOLO 低 conf mine(<code>infer --weights</code> 設低 conf,離線可用 <code>infer --synthetic</code> 試流程)→ ② <code>bank-audit</code> → ③ App + <code>@vix/review</code> 看 Top-K 覆判 → ④ <code>eval-ingest</code> 在凍結 <code>--eval</code> set 上算<b>逐類 recall delta</b>。
+<br><b>誠實注意</b>:沒有 GT 不能宣稱 recall —— engineer-confirmed-rate 是 precision-like,recall <b>只</b>在凍結有標籤 eval set 上經 eval-ingest 量、<b>逐類別</b>且無單一類別退步才算數。conf 下限用 sweep 選(recovered-defect vs review-load 曲線)。完整設計見 <a href="../discussion/bank-audit-design.md">bank-audit-design.md</a>。</div>
 
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>

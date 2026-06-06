@@ -264,6 +264,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sevi.add_argument("--iou", type=float, default=0.5)
     sem = sub.add_parser("error-mine", help="rank unlabeled candidates nearest the model's eval FP/FN errors")
     sem.add_argument("--top", type=int, default=20)
+    sba = sub.add_parser("bank-audit", help="multi-bank Top-K embedding audit of low-conf proposals -> defect/reflection/unknown (advisory)")
+    sba.add_argument("--defect-tag", default="golden")
+    sba.add_argument("--reflection-tag", default="rejected")
+    sba.add_argument("--normal-tag", default=None)
+    sba.add_argument("--conf-lo", type=float, default=0.05)
+    sba.add_argument("--conf-hi", type=float, default=0.25)
+    sba.add_argument("--tau", type=float, default=0.10, help="margin abstain knob (calibrated score)")
+    sba.add_argument("--novelty-radius", type=float, default=0.30)
+    sba.add_argument("--dedup-distance", type=float, default=0.05)
+    sba.add_argument("--top", type=int, default=50)
     return p
 
 
@@ -695,6 +705,21 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"{r['id']}  closeness={r['closeness']}  {r['why']}")
         if not ranked:
             print("無候選(需先 eval-ingest,且未標註候選需有 embedding)")
+
+    elif args.cmd == "bank-audit":
+        r = pipeline.bank_audit(
+            adapter, cfg, defect_tag=args.defect_tag, reflection_tag=args.reflection_tag,
+            normal_tag=args.normal_tag, conf_lo=args.conf_lo, conf_hi=args.conf_hi,
+            tau=args.tau, novelty_radius=args.novelty_radius,
+            dedup_distance=args.dedup_distance, top=args.top,
+        )
+        print(f"banks={r['banks']} fingerprint={r['fingerprint']}")
+        print(f"{r['n_proposals']} low-conf proposals -> {r['counts']}")
+        for row in r["results"]:
+            print(f"  {row['id']}  conf={row['conf']}  {row['verdict']}  "
+                  f"(bank={row['winning_bank']}, margin={row['margin']})")
+        print("注:bank_verdict 為諮詢欄位(不覆寫 route);defect_like/unknown 已標 hard_positive"
+              "(人工 resolve→golden,不自動晉升)")
 
     return 0
 

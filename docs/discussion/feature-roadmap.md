@@ -52,6 +52,9 @@ VIX 是一個封閉的 embedding 世界 —— `route`/`gate`/`coverage`/`label-
 把目前 uncertainty+novelty 換成**朝模型實測誤差面**取樣(靠近 FP/FN 群、且該類 AP 低者優先)。
 - **→ mAP**:純不確定度會系統性漏掉「**有自信但答錯**」的最高價值樣本;誤差導引把固定標註預算花在真正能動指標的樣本。需保留 novelty 下限避免隧道視野。
 
+> 另:**低信心 YOLO proposal 探勘 + 三銀行 DINO embedding 審查**(SMM 提案)亦已實作為 `vix bank-audit`,
+> 設計與共識見 [bank-audit-design.md](bank-audit-design.md),操作見 SOP §B7。
+
 ### #6 標籤錯誤「修正工作流」(非只偵測)`vix fix-labels`
 把 `label-noise` + eval FN/混淆的建議,做成 App 內 接受/編輯/拒絕 → 寫回 golden(全程稽核)→ 重匯出,並用 challenge set 確認修正真的有幫助。
 - **→ mAP**:VIX 目前只「偵測」標錯就斷在一張清單;修正才是最高 ROI 的資料介入。錯框注入梯度雜訊直接壓 AP,修幾%的標錯常換來數個 mAP 點。
