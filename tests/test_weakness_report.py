@@ -46,7 +46,7 @@ def test_pipeline_weakness_report_gt_with_queue(tmp_path):
     ]), encoding="utf-8")
     pipeline.eval_ingest(ad, cfg, str(res))
 
-    r = pipeline.weakness_report(ad, cfg)
+    r = pipeline.weakness_report(ad, cfg, worklist=True)  # also tag the worklist for App saved-views
     d = r["data"]
     assert d["mode"] == "gt" and d["mAP"] == 0.5
     assert d["per_class"][0]["cls"] == "b"                                   # weakest (AP 0) first
@@ -63,3 +63,12 @@ def test_pipeline_weakness_report_gt_with_queue(tmp_path):
     assert wl.exists()
     body = wl.read_text(encoding="utf-8")
     assert "vix_hash" in body and "c0" in body and "label:b" in body            # queue ids exported as a worklist
+    # Tier 2: --worklist tagged the queued candidate vixq:* so the FiftyOne App can build a saved view
+    c0_tags = next(t for h, _s, _d, t in ad.samples() if h == "c0")
+    assert any(x.startswith("vixq:") for x in c0_tags)
+    assert pipeline.worklist_views(c0_tags)                                     # -> a clickable saved-view spec
+
+
+def test_worklist_views_helper():
+    v = pipeline.worklist_views(["review", "vixq:label:bubble", "vixq:confident_wrong", "golden"])
+    assert v == {"工作清單 label:bubble": "vixq:label:bubble", "工作清單 confident_wrong": "vixq:confident_wrong"}

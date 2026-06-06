@@ -35,4 +35,9 @@
 三輪多代理評 `weakness_report`(操作員 / data-centric / 產品三視角)後修正:
 - **Tier 0 正確性(修「說謊的」)**:① `label_noise` 守門 —— 沒有正向模型混淆(c_cnt>0)且 embedding 真難分(sep_err>0.35)就不歸因為標籤雜訊(原本會對「可分、從不混淆」的類別對誤判 label_noise,白導人力);C=0+可分 → `clean`。② 把已算的 **O/C/Δ 信賴區間 + n_gt 分母**渲染出來(原本只顯示點估計)。③ `loc_gap` 區分 **N/A(單一 IoU)vs 0**;附 `map_by_iou`。④ 漏報型態顯示**全分佈**(非 most_common(1))。
 - **Tier 1 可用性 + 行動化**:TL;DR 健康度(RED/AMBER/GREEN)+ 最弱類別 + 「現在做這個」;**`weakness_worklist.csv` 匯出**(把佇列從「讀」變「可清的清單」)+ `--worklist` 打 `vixq:*` tag 供 App 篩選;佇列旁就近顯示**歷史命中率**;PROXY 標記去重(頂部一次)。
-- 範例:`docs/examples/weakness_report.html`(+ `gen_weakness_report.py` 可重現)。仍待(Tier 2):FiftyOne App 面板、一致性判定接進 gate、報告版本化進 snapshot、hit-rate 回授重排佇列、批次範圍。
+- 範例:`docs/examples/weakness_report.html`(+ `gen_weakness_report.py` 可重現)。
+
+## Tier 2 應用(進行中)
+- ✅ **一致性判定接進 gate**:`pre_train_gate` 在**受保護類別對**(來自 `set-eval-baseline --protect`)被判 **supported 的 taxonomy/label_noise** 且**非** representation_fixable 時 → **NO-GO**(類別定義疑有問題,別匯出/重訓)。opt-in、需 baseline 的 protected 集 + eval;報告從「諮詢」升級為**能擋退步**。
+- ✅ **App 可點工作清單**:`weakness-report --worklist` 打 `vixq:*` tag → `vix app` 自動把它們建成 **saved views**(`pipeline.worklist_views`),清單從「讀 vix_hash」變成「在 App 內點開該類候選」。
+- 仍待:完整 FiftyOne **App 面板**(把報告表格嵌進 App)、報告版本化進 **snapshot**(可查趨勢+稽核)、**hit-rate 回授重排佇列**、批次範圍。

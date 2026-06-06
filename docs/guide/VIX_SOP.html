@@ -463,7 +463,8 @@ vix weakness-report --worklist                              # 另把佇列樣本
   <tr><td><code>insufficient_support</code> / <code>*_watch</code></td><td>GT/golden 太少</td><td>先補樣本;<b>絕不</b>在薄證據上 merge</td></tr>
 </table>
 <p>每對附:可分性 sep_err [Wilson CI]、O[i→j]、C[i→j]、Δ 的保守 CI、支撐階梯(insufficient&lt;10 / provisional 10–20 / supported ≥20)。</p>
-<div class="warn"><b>誠實邊界:</b>諮詢式,<b>絕不自動改標/自動 merge</b>。可分性措辭一律綁「<b>在目前 embedding 空間</b>」(凍結 DINO 可能才是瓶頸,非 taxonomy 真壞);`0∈CI(Δ)` 不給方向性歸因;merge 建議需 supported。多標註者 κ 路線需 schema 變更 + 多標註資料,<b>延後</b>。放大價值的下一步:佇列命中率飛輪 + <b>領域自適應 embedding</b>(用 golden 在凍結 DINO 上學輕量投影,非訓練 YOLO)把整個 stack 抬高。</div>
+<div class="warn"><b>誠實邊界:</b>諮詢式,<b>絕不自動改標/自動 merge</b>。可分性措辭一律綁「<b>在目前 embedding 空間</b>」(凍結 DINO 可能才是瓶頸,非 taxonomy 真壞);`0∈CI(Δ)` 不給方向性歸因;merge 建議需 supported。多標註者 κ 路線需 schema 變更 + 多標註資料,<b>延後</b>。</div>
+<div class="warn"><b>接進 gate(已實作):</b>用 <code>set-eval-baseline --protect &lt;class&gt;</code> 指定受保護類別後,若該類所在的對被判 <b>supported 的 taxonomy/label_noise</b> 且非 representation_fixable,<code>vix gate</code> 會 <b>NO-GO</b>(被污染的類別定義不該進昂貴的外部重訓)。**App 工作清單**:<code>weakness-report --worklist</code> 打 <code>vixq:*</code> tag → <code>vix app</code> 自動建成可點 saved views。</div>
 
 <!-- ============ B11 ============ -->
 <h2 class="sec" id="b11">B11. 領域自適應 embedding:<code>adapt-embedding</code> <span class="tag vix">VIX 客製</span></h2>

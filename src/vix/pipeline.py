@@ -690,6 +690,23 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
         if advisory:
             extra_checks["regression_advisory"] = advisory
 
+    # consistency gate (opt-in): a SUPPORTED taxonomy/label_noise verdict on a PROTECTED class pair
+    # blocks — a poisoned class definition must not be exported into an expensive external retrain.
+    # representation_fixable pairs (a learned projection separates them) are NOT blocked: encoder
+    # limit, not a definition dead-end. Needs the baseline's protected set + an eval (for confusion).
+    if cfg.eval_baseline_path.exists() and cfg.eval_results_path.exists():
+        protected = set(json.loads(cfg.eval_baseline_path.read_text(encoding="utf-8")).get("protected", {}))
+        if protected:
+            from .core.consistency import consistency_findings
+            ev2 = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
+            for f in consistency_findings(_emb_by_class(adapter, {Tag.GOLDEN}),
+                                          ev2.get("confusion"), ev2.get("n_gt"), adapt_rescued=_adapt_rescued(cfg)):
+                if (f["verdict"] in ("taxonomy", "label_noise") and f["tier"] == "supported"
+                        and not f.get("representation_fixable") and (set(f["pair"]) & protected)):
+                    extra_reasons.append(
+                        f"受保護類別對 {f['pair'][0]}↔{f['pair'][1]} 判定 {f['verdict']}(類別定義疑有問題)"
+                        "— 先重新裁決/釐清定義再匯出/重訓")
+
     result = pre_train_gate(
         n_review_open=n_review, golden_train_overlap=overlap,
         under_represented=under, drift_triggered=drift_triggered,
@@ -786,6 +803,14 @@ def _active_projection(cfg):
     if proj is None or proj.get("W") is None or np.asarray(proj["W"]).shape[1] < 2:
         return None
     return proj
+
+
+def worklist_views(all_tags) -> dict:
+    """FiftyOne saved-view specs for the weakness worklist (Tier 2: clickable worklist in the App).
+    Each `vixq:*` tag (written by `weakness-report --worklist`) -> a named saved view, so the operator
+    clears the worklist by clicking, not by hunting vix_hashes. Returns {view_name: tag}. Pure."""
+    return {f"工作清單 {t[len('vixq:'):]}": t
+            for t in sorted({x for x in all_tags if isinstance(x, str) and x.startswith("vixq:")})}
 
 
 def _log_queue(cfg, queue, ids, predict):

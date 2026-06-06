@@ -3,6 +3,8 @@ Design model-loop-v2 §6 R6/R7: eval_set_hash binds the comparison; protected cl
 fail-closed (small support -> block, not advisory); no baseline -> gate behaves as before.
 """
 
+import json
+
 import numpy as np
 
 from vix import pipeline
@@ -95,3 +97,41 @@ def test_gate_unchanged_without_baseline(tmp_path):
     cfg, ad = _seeded(tmp_path)
     # no eval_baseline.json -> challenge-guard is fully opt-in, gate behaves exactly as before
     assert pipeline.pre_train_gate_stage(ad, cfg).verdict == "GO"
+
+
+# --- consistency -> gate (Tier 2: make the report load-bearing) ---
+
+def _ovl(n, seed):
+    return np.array([1, 0, 0, 0, 0, 0.0]) + 0.6 * np.random.RandomState(seed).randn(n, 6)  # a,b overlap -> inseparable
+
+
+def _setup_taxonomy(tmp_path, protected):
+    cfg = Config(workspace=tmp_path / "ws")
+    cfg.ensure_dirs()
+    ad = InMemoryAdapter()
+    for i, v in enumerate(_ovl(25, 1)):
+        ad.seed(f"ga{i}", "a.png", [_det("a", v)], tags=[Tag.GOLDEN])
+    for i, v in enumerate(_ovl(25, 2)):
+        ad.seed(f"gb{i}", "b.png", [_det("b", v)], tags=[Tag.GOLDEN])
+    box = [0.5, 0.5, 0.4, 0.4]
+    imgs = [{"vix_hash": f"e{i}", "gt": [{"label": "a", "bbox": box}],
+             "pred": [{"label": "b", "bbox": box, "conf": 0.8}]} for i in range(10)]          # confusion a->b=10
+    imgs += [{"vix_hash": f"ok{i}", "gt": [{"label": "a", "bbox": box}],
+              "pred": [{"label": "a", "bbox": box, "conf": 0.9}]} for i in range(10)]          # n_gt[a]=20 -> C=0.5
+    p = tmp_path / "res.jsonl"
+    p.write_text("\n".join(json.dumps(x) for x in imgs), encoding="utf-8")
+    pipeline.eval_ingest(InMemoryAdapter(), cfg, str(p))
+    pipeline.set_eval_baseline(ad, cfg, protected=protected)
+    return cfg, ad
+
+
+def test_consistency_gate_blocks_protected_bad_definition(tmp_path):
+    cfg, ad = _setup_taxonomy(tmp_path, protected={"a": 0.05})  # 'a' protected; a<->b is a taxonomy pair
+    res = pipeline.pre_train_gate_stage(ad, cfg)
+    assert res.verdict == "NO-GO" and any("受保護類別對" in r for r in res.reasons)
+
+
+def test_consistency_gate_silent_when_pair_not_protected(tmp_path):
+    cfg, ad = _setup_taxonomy(tmp_path, protected={"zzz": 0.05})  # protect an unrelated class
+    res = pipeline.pre_train_gate_stage(ad, cfg)
+    assert not any("受保護類別對" in r for r in res.reasons)      # a<->b not protected -> no consistency block

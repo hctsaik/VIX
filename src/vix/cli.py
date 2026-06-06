@@ -391,7 +391,11 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"exported {res['n_images']} images, {res['n_labels']} labels -> {res['data_yaml']}")
 
     elif args.cmd == "app":
-        adapter.launch_app()
+        # surface the weakness worklist (vixq:* tags from `weakness-report --worklist`) as clickable
+        # saved views, alongside the default review/pass views.
+        all_tags = {t for _h, _s, _d, tags in adapter.samples() for t in tags}
+        views = {"review_queue": "review", "passed": "pass", **pipeline.worklist_views(all_tags)}
+        adapter.launch_app(views)
 
     elif args.cmd == "audit-labels":
         issues = pipeline.audit_labels(adapter, cfg, k=args.k)
