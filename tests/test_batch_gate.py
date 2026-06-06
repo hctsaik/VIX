@@ -136,3 +136,14 @@ def test_unadmit_without_admit_raises(tmp_path):
     import pytest
     with pytest.raises(ValueError, match="未被 admit"):
         pipeline.batch_unadmit(ad, cfg, "w23")
+
+
+def test_batch_gate_worklist_tags_offenders_for_app(tmp_path):
+    cfg = _cfg(tmp_path)
+    ad = InMemoryAdapter()
+    ad.seed("g0", "g.png", [_det("a", [1, 0])], tags=[Tag.GOLDEN])
+    ad.seed("b_leak", "b.png", [_det("a", [1, 0])], tags=["batch:w23"])  # leakage offender
+    pipeline.batch_gate(ad, cfg, "w23", worklist=True)
+    tags = next(t for h, _s, _d, t in ad.samples() if h == "b_leak")
+    assert "vixq:batch:leakage" in tags                                  # tagged for the App
+    assert pipeline.worklist_views(tags)                                 # -> a clickable saved-view spec

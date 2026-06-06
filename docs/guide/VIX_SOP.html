@@ -516,6 +516,11 @@ vix batch-unadmit w23       # 回退:移除 admitted tag、訓練池雜湊回退
 vix batch-ledger            # 哪些批次已准入訓練集、何時、什麼 verdict(從 hash 鏈重建)</code></pre>
 <p>把「每週決策」變成<b>可辯護、可回退的治理紀錄</b>:`batch-admit` 把批次打 <code>admitted</code> tag 並寫一筆綁 {verdict, 訓練池(golden∪admitted)<b>前/後 content_hash</b>, eval_set_hash, backend} 的 hash 鏈事件;<code>batch-gate</code> 判 BLOCK 時<b>拒絕准入</b>(讓 gate 真的能擋),<code>--force</code> 覆蓋也會留痕。回答「<b>為什麼 w23 在訓練集裡</b>」與「<b>把它拿掉</b>」。</p>
 
+<h3>App 工作清單 + 跨週趨勢</h3>
+<pre><code>vix batch-gate w23 --worklist   # 把問題樣本打 vixq:batch:* tag → vix app 變成可點 saved views
+vix batch-trend                 # 各批 gate verdict + 准入狀態 + 洩漏趨勢:批次品質有沒有逐週變差</code></pre>
+<p><code>--worklist</code> 讓 <code>vix app</code> 直接跳進該批的洩漏/退化/疑似標錯/自信卻錯樣本(沿用已驗證的 saved-views 機制)。<code>batch-trend</code> 從 hash 鏈重建逐批趨勢,看品質漂移。(完整把報告表格嵌進 App 的自訂 Panel 需 live FiftyOne,為最後一塊。)</p>
+
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>
 <div class="warn"><b>前置:</b>已照 <a href="#b0">B0</a> 備好 YOLO 權重與影像;若是第一次,先建立 golden/anchor 基準(<a href="#b2">B2</a> 前兩行)。</div>

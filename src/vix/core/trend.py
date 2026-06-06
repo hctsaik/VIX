@@ -47,3 +47,44 @@ def eval_trend(records: list[dict], classes: list[str] | None = None) -> dict:
         "note": ("⚠ eval set 在期間內變過 → 各類 AP delta 不可直接比較(可能只是 val 變簡單)"
                  if eval_set_changed else "單一 eval set → AP delta 可比較"),
     }
+
+
+def batch_trend(records: list[dict]) -> dict:
+    """Per-batch gate verdict + admit status over time, from the decision log — 'is batch quality
+    drifting week over week?'. Keeps the LATEST gate verdict per batch (a batch can be re-gated).
+    Pure: operates on already-read records."""
+    gate: dict[str, dict] = {}
+    admit: dict[str, bool] = {}
+    order: list[str] = []
+    for r in records:
+        ev = r.get("event")
+        b = r.get("batch_id")
+        if not b:
+            continue
+        if ev == "batch_gate":
+            if b not in gate and b not in admit:
+                order.append(b)
+            ex = r.get("extra", {}) or {}
+            gate[b] = {"ts": r.get("ts_utc"), "verdict": r.get("decision"),
+                       "block": ex.get("block", {}) or {}, "clean": ex.get("clean", {}) or {},
+                       "n_batch": ex.get("n_batch")}
+        elif ev == "batch_admit":
+            if b not in gate and b not in admit:
+                order.append(b)
+            admit[b] = r.get("decision") != "REFUSED"
+        elif ev == "batch_unadmit":
+            admit[b] = False
+
+    series = []
+    for b in order:
+        g = gate.get(b, {})
+        series.append({"batch": b, "ts": g.get("ts"), "verdict": g.get("verdict"),
+                       "block": g.get("block", {}), "clean": g.get("clean", {}),
+                       "n_batch": g.get("n_batch"), "admitted": admit.get(b, False)})
+    return {
+        "n_batches": len(series),
+        "n_block": sum(1 for s in series if s["verdict"] == "BLOCK"),
+        "n_admitted": sum(1 for s in series if s["admitted"]),
+        "leakage_trend": [(s["batch"], (s["block"] or {}).get("eval_leakage", 0)) for s in series],
+        "series": series,
+    }

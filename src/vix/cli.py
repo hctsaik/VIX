@@ -257,6 +257,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sbg = sub.add_parser("batch-gate", help="can THIS batch be admitted? batch-scoped hygiene + leakage-safety verdict (BLOCK/CLEAN/PASS/PARTIAL) — NOT a mAP-gain promise")
     sbg.add_argument("batch", help="batch id (e.g. w23)")
     sbg.add_argument("--max-distance", type=float, default=0.05, help="near-duplicate cosine-distance threshold")
+    sbg.add_argument("--worklist", action="store_true", help="tag offenders vixq:batch:* so `vix app` surfaces them as clickable saved views")
+    sub.add_parser("batch-trend", help="per-batch gate verdict + admit status across weekly drops (is batch quality drifting? from the audit chain)")
     sba2 = sub.add_parser("batch-admit", help="formally admit a gated batch into the training pool (defensible + reversible + queryable record); a BLOCK verdict refuses unless --force")
     sba2.add_argument("batch", help="batch id (e.g. w23)")
     sba2.add_argument("--force", action="store_true", help="admit despite a BLOCK verdict (the override is logged)")
@@ -707,7 +709,7 @@ def _main(argv: list[str] | None = None) -> int:
               "無法證明某次『確認』是否真的有人看過。")
 
     elif args.cmd == "batch-gate":
-        r = pipeline.batch_gate(adapter, cfg, args.batch, max_distance=args.max_distance)
+        r = pipeline.batch_gate(adapter, cfg, args.batch, max_distance=args.max_distance, worklist=args.worklist)
         print(f"batch-gate {r['batch']}: {r['verdict']}({r['n_batch']} 張)")
         for x in r["reasons"]:
             print(f"  - {x}")
@@ -735,6 +737,15 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"目前已准入訓練池的批次: {r['admitted_batches'] or '(無)'}")
         for h in r["history"]:
             print(f"  {h['ts']}  {h['event']:14s} {h['batch']:8s} {h['decision']}")
+
+    elif args.cmd == "batch-trend":
+        t = pipeline.batch_trend(cfg)
+        print(f"批次趨勢({t['n_batches']} 批;BLOCK {t['n_block']};已准入 {t['n_admitted']}):")
+        for s in t["series"]:
+            blk = ",".join(f"{k}={v}" for k, v in (s["block"] or {}).items() if v) or "-"
+            print(f"  {s['batch']:8s} {str(s['verdict']):8s} block[{blk}] {'✓admitted' if s['admitted'] else ''}")
+        if not t["n_batches"]:
+            print("  (無 batch-gate/admit 紀錄;先 vix batch-gate <id>)")
 
     elif args.cmd == "gate":
         r = pipeline.pre_train_gate_stage(adapter, cfg)

@@ -720,7 +720,7 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     return result
 
 
-def batch_gate(adapter, cfg, batch, max_distance=0.05):
+def batch_gate(adapter, cfg, batch, max_distance=0.05, worklist=False):
     """The weekly 'can THIS batch go into training? what must I clean first?' verdict.
 
     HYGIENE + leakage-safety only — NOT a mAP-gain promise (VIX doesn't retrain). Two CAUSAL-harm
@@ -778,6 +778,14 @@ def batch_gate(adapter, cfg, batch, max_distance=0.05):
     block = {"eval_leakage": sorted(leak_ids), "degenerate_boxes": degenerate}
     clean = {"open_review": n_review, "label_noise": noise,
              "within_batch_dups": within_dups, "confident_wrong": conf_wrong}
+    if worklist:  # tag offenders vixq:batch:* so `vix app` surfaces them as clickable saved views
+        for ids, tag in ((leak_ids, "vixq:batch:leakage"), (degenerate, "vixq:batch:degenerate"),
+                         (noise, "vixq:batch:label_noise"), (conf_wrong, "vixq:batch:confident_wrong")):
+            for h in ids:
+                try:
+                    adapter.apply_tags(h, [tag])
+                except Exception:  # noqa: BLE001 - id may not be a live sample
+                    pass
     verdict, reasons = batch_gate_verdict(block, clean, eval_available, backend_ok)
     DecisionLog(cfg.decision_log_path).append(
         "batch_gate", batch_id=str(batch), decision=verdict,
@@ -881,6 +889,13 @@ def batch_ledger(cfg):
         elif ev == "batch_unadmit":
             state[b] = "unadmitted"
     return {"admitted_batches": sorted(b for b, s in state.items() if s == "admitted"), "history": history}
+
+
+def batch_trend(cfg):
+    """Per-batch gate verdict + admit status across weekly drops (is batch quality drifting?),
+    read from the hash-chained decision log."""
+    from .core.trend import batch_trend as _batch_trend
+    return _batch_trend(DecisionLog(cfg.decision_log_path).read_all())
 
 
 def explain_one(adapter, cfg, vix_hash):  # U9
