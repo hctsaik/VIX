@@ -137,6 +137,8 @@ def calibrate(adapter: DatasetAdapter, cfg: Config) -> ThresholdPolicy:
         if Tag.GOLDEN in tags:
             for d in dets:
                 per_conf[d.label].append(d.confidence)
+    if not per_conf:  # U2: no golden detections to calibrate from -> name the prerequisite
+        raise ValueError("尚無 golden 偵測可校準:請先 vix ingest --golden,再 vix infer / vix embed")
     golden = _emb_by_class(adapter, {Tag.GOLDEN})
     per_dist = {c: intra_class_knn_distances(emb, cfg.knn_k) for c, emb in golden.items()}
     policy = ThresholdPolicy.calibrate(
@@ -153,6 +155,8 @@ def calibrate(adapter: DatasetAdapter, cfg: Config) -> ThresholdPolicy:
 
 
 def route(adapter: DatasetAdapter, cfg: Config, policy: ThresholdPolicy | None = None) -> dict:
+    if policy is None and not cfg.thresholds_path.exists():  # U2: name the prerequisite, not "Errno 2"
+        raise ValueError("尚未校準:請先執行 vix calibrate(會產生 thresholds.json)")
     policy = policy or ThresholdPolicy.load(cfg.thresholds_path)
     cal_backend = policy.meta.get("embedding_backend")  # AI6: distance thresholds are backend-specific
     backend_mismatch = bool(cal_backend) and cal_backend != cfg.embedding_backend
@@ -287,6 +291,8 @@ def export(
         for _h, src, dets, tags in adapter.samples()
         if Tag.GOLDEN in tags and Tag.REJECTED not in tags
     ]
+    if not records:  # U2: nothing to export -> name the prerequisite instead of writing an empty dir
+        raise ValueError("尚無 golden 可匯出:請先覆核並併入 golden(vix review-queue → confirm)")
     res = DatasetExporter(class_names).export(records, dst, copy_images=copy_images)
     manifest = verify_mod.write_dir_manifest(dst)  # hashes images + labels + data.yaml (U8/V8)
     res["export_manifest"] = str(manifest)
@@ -516,6 +522,47 @@ def review_queue(adapter, cfg, top=50):  # T3 + T7
         {"id": r.id, "risk": r.risk, "reasons": r.reasons, "why": explain(r.reasons, r.scores)}
         for r in ranked
     ]
+
+
+def status(adapter, cfg):
+    """'Where am I in the loop + what to run next' (U4). Reads only tags + which workspace artifacts
+    exist — no computation, no claims about quality/mAP. The daily re-entry verb; the next-step rule
+    is conditional (branches on state), not a hardcoded line. Pure: InMemory-testable."""
+    n = {"total": 0, "golden": 0, "anchor": 0, "review": 0, "rejected": 0, "pass": 0, "eval": 0, "admitted": 0}
+    key = {Tag.GOLDEN: "golden", Tag.ANCHOR: "anchor", Tag.REVIEW: "review", Tag.REJECTED: "rejected",
+           Tag.PASS: "pass", Tag.EVAL: "eval", Tag.ADMITTED: "admitted"}
+    has_det = has_emb = False
+    for _h, _s, dets, tags in adapter.samples():
+        n["total"] += 1
+        for t, k in key.items():
+            if t in tags:
+                n[k] += 1
+        if dets:
+            has_det = True
+            if any(d.embedding is not None for d in dets):
+                has_emb = True
+    has_thr = cfg.thresholds_path.exists()
+    has_eval = cfg.eval_results_path.exists()
+    routed = (n["pass"] + n["review"]) > 0
+    if n["total"] == 0:
+        nxt = ("ingest", "vix ingest ./golden --batch init --golden")
+    elif not has_det:
+        nxt = ("infer", "vix infer --weights yolo.pt")
+    elif not has_emb:
+        nxt = ("embed", "vix embed")
+    elif not has_thr:
+        nxt = ("calibrate", "vix calibrate")
+    elif not routed:
+        nxt = ("route", "vix route")
+    elif n["review"] > 0:
+        nxt = ("review", f"vix review-queue --top 40   # 尚有 {n['review']} 筆待覆核")
+    elif not has_eval:
+        nxt = ("eval-ingest", "(選用) vix eval-ingest <val.jsonl> → vix weakness-report")
+    else:
+        nxt = ("gate", "vix gate   # 能不能訓練? 然後 vix export")
+    return {"counts": n, "has_detections": has_det, "has_embeddings": has_emb,
+            "has_thresholds": has_thr, "has_eval": has_eval, "routed": routed,
+            "next": {"stage": nxt[0], "cmd": nxt[1]}}
 
 
 def audit(cfg, since=None, until=None, event=None, reviewer=None):  # T8

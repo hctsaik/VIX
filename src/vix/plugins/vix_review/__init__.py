@@ -33,6 +33,13 @@ def _selected_hashes(ctx):
     return [ctx.dataset[sid]["vix_hash"] for sid in (ctx.selected or [])]
 
 
+def _sample_id_for_hash(ctx, h):
+    """vix_hash -> FiftyOne sample id (inverse of _selected_hashes). The one bit of live-only glue
+    the queue panel needs to navigate; kept tiny so it's the obvious thing to find if FiftyOne drifts."""
+    s = ctx.dataset.match({"vix_hash": h}).first()
+    return s.id if s else None
+
+
 class ConfirmGolden(foo.Operator):
     @property
     def config(self):
@@ -128,8 +135,83 @@ class VixReportPanel(foo.Panel):
         return types.Property(panel, view=types.GridView(height=100, width=100))
 
 
+def _queue_rows(ctx, top=50):
+    """The risk-ranked review queue as table rows. Pure render of pipeline.review_queue (tested core):
+    no ranking/decision logic lives here. Returns (rows, error_str)."""
+    cfg, ad = Config(), _adapter(ctx)
+    try:
+        q = pipeline.review_queue(ad, cfg, top=top)
+    except Exception as exc:  # noqa: BLE001 - surface in-panel rather than crash the App
+        return [], str(exc)
+    return [{"id": r["id"], "risk": round(r.get("risk", 0.0), 3), "why": (r.get("why") or "")[:90]} for r in q], None
+
+
+class VixQueuePanel(foo.Panel):
+    """The review queue as a CLICKABLE table (Tier 2 GUI): each row jumps the App view to that sample
+    and can confirm→golden / dismiss in place — turning the App's one unused superpower (a click that
+    drives the view) on. ZERO logic here: rows come from pipeline.review_queue, actions call
+    pipeline.resolve_review — both tested core. If navigation ever breaks on a FiftyOne bump, the row
+    still shows the vix_hash so the operator can fall back to the CLI (no dead-end)."""
+
+    @property
+    def config(self):
+        return foo.PanelConfig(name="vix_queue", label="VIX: 覆核佇列(點列跳到該圖)", surfaces="grid")
+
+    def on_load(self, ctx):
+        rows, err = _queue_rows(ctx)
+        ctx.panel.state.rows = rows
+        ctx.panel.data.rows = rows  # TableView binds to the data path
+        ctx.panel.state.err = err
+
+    on_refresh = on_load
+
+    def _row_hash(self, ctx):
+        rows = ctx.panel.state.rows or []
+        idx = ctx.params.get("row")
+        if isinstance(idx, int) and 0 <= idx < len(rows):
+            return rows[idx]["id"]
+        return ctx.params.get("id")  # robust fallback if the frontend passes the id directly
+
+    def on_inspect(self, ctx):
+        h = self._row_hash(ctx)
+        sid = _sample_id_for_hash(ctx, h) if h else None
+        if sid:
+            ctx.ops.set_view(view=ctx.dataset.select(sid))  # drive the grid to the clicked sample
+
+    def _resolve(self, ctx, decision):
+        h = self._row_hash(ctx)
+        if not h:
+            return
+        cfg, ad = Config(), _adapter(ctx)
+        pipeline.resolve_review(ad, cfg, h, decision, reviewer_id=ctx.user_id or "reviewer")
+        self.on_load(ctx)  # resolved item drops out of the queue (review_queue excludes golden/rejected)
+        ctx.ops.reload_dataset()
+
+    def on_confirm(self, ctx):
+        self._resolve(ctx, "confirm")
+
+    def on_dismiss(self, ctx):
+        self._resolve(ctx, "false_alarm")
+
+    def render(self, ctx):
+        panel = types.Object()
+        if ctx.panel.state.err:
+            panel.md(f"佇列產生失敗:`{ctx.panel.state.err}`\n\n需先 `vix calibrate` + `vix route`。", name="qerr")
+        table = types.TableView()
+        table.add_column("risk", label="風險")
+        table.add_column("id", label="vix_hash")
+        table.add_column("why", label="原因(proxy)")
+        table.add_row_action("inspect", self.on_inspect, label="看圖", icon="visibility")
+        table.add_row_action("confirm", self.on_confirm, label="確認→golden", icon="check")
+        table.add_row_action("dismiss", self.on_dismiss, label="誤報排除", icon="block")
+        panel.list("rows", types.Object(), view=table)
+        panel.btn("refresh", label="重新整理佇列", on_click=self.on_refresh)
+        return types.Property(panel, view=types.GridView(height=100, width=100))
+
+
 def register(p):
     p.register(ConfirmGolden)
     p.register(DismissFalseAlarm)
     p.register(ExplainSample)
     p.register(VixReportPanel)
+    p.register(VixQueuePanel)

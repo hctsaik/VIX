@@ -46,3 +46,27 @@ def test_plugin_registers_panel():
 
     m.register(_Collector())
     assert "VixReportPanel" in registered and "ConfirmGolden" in registered
+    assert "VixQueuePanel" in registered  # P1: the clickable review-queue panel
+
+
+def test_queue_panel_config():
+    m = _load_plugin()
+    panel = m.VixQueuePanel()
+    assert panel.config.name == "vix_queue" and panel.config.surfaces == "grid"
+
+
+def test_queue_panel_render_schema_builds_with_row_actions():
+    import fiftyone.operators.types as types
+    m = _load_plugin()
+    panel = m.VixQueuePanel()
+    # build the TableView render schema the way render() does — catches row-action/list API drift offline
+    obj = types.Object()
+    table = types.TableView()
+    table.add_column("risk", label="風險")
+    table.add_column("id", label="vix_hash")
+    table.add_row_action("inspect", panel.on_inspect, label="看圖", icon="visibility")
+    table.add_row_action("confirm", panel.on_confirm, label="確認", icon="check")
+    obj.list("rows", types.Object(), view=table)
+    js = types.Property(obj, view=types.GridView(height=100, width=100)).to_json()
+    actions = js["type"]["properties"]["rows"]["view"]["row_actions"]
+    assert [a["name"] for a in actions] == ["inspect", "confirm"]

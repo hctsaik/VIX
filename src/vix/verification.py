@@ -148,8 +148,12 @@ def run_gui(cfg: Config, execute: bool = True) -> int:
         import fiftyone.plugins as fop
 
         print("plugins discovered:", [p.name for p in fop.list_plugins()] or "(none)")
-        panel_ok = _reg.operator_exists("@vix/review/vix_report")  # the report Panel registers in a live runtime
-        print(f"  [{'PASS' if panel_ok else 'FAIL'}] vix_report 面板已在 FiftyOne runtime 註冊")
+        # both VIX panels must register in a live runtime (report + the clickable review queue)
+        report_ok = _reg.operator_exists("@vix/review/vix_report")
+        queue_ok = _reg.operator_exists("@vix/review/vix_queue")
+        panel_ok = report_ok and queue_ok
+        print(f"  [{'PASS' if report_ok else 'FAIL'}] vix_report 面板已註冊")
+        print(f"  [{'PASS' if queue_ok else 'FAIL'}] vix_queue 覆核佇列面板已註冊")
     except Exception as exc:  # noqa: BLE001
         print("plugins/panel listing skipped:", exc)
 
@@ -198,7 +202,7 @@ def run_gui(cfg: Config, execute: bool = True) -> int:
             time.sleep(1)
         ok = "golden" in tags
         print(f"[{'PASS' if ok else 'FAIL'}] GUI 執行 confirm_golden -> rev1 tags={tags}")
-    ok = ok and panel_ok  # the vix_report Panel must also be registered in the live App
+    ok = ok and panel_ok  # both VIX panels (report + queue) must also be registered in the live App
     fo.delete_dataset(DATASET)
-    print(f"=== {'GUI 驗證 PASS' if ok else 'GUI 驗證 FAIL'} (截圖在 {shots};vix_report 面板={'OK' if panel_ok else 'MISSING'}) ===")
+    print(f"=== {'GUI 驗證 PASS' if ok else 'GUI 驗證 FAIL'} (截圖在 {shots};VIX 面板={'OK' if panel_ok else 'MISSING'}) ===")
     return 0 if ok else 1

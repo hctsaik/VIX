@@ -86,12 +86,23 @@ def make_adapter(cfg: Config, kind: str):
     return FiftyOneAdapter(cfg)
 
 
+class _GoldenPathParser(argparse.ArgumentParser):
+    """On bare `vix` or an unknown verb, print the 9-step golden path instead of argparse's
+    70-verb usage wall (U1). Other parse errors (bad flags within a known verb) behave normally."""
+
+    def error(self, message: str):
+        if message.startswith("argument cmd:"):  # unknown top-level verb (argparse invalid-choice on cmd)
+            sys.stderr.write(_QUICKSTART + "\n完整指令:vix --help\n")
+            self.exit(2)
+        super().error(message)
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="vix", description="Vision Integrity eXplainability - data gatekeeper")
+    p = _GoldenPathParser(prog="vix", description="Vision Integrity eXplainability - data gatekeeper")
     p.add_argument("--workspace", default=None, help="workspace dir (default ./vix_workspace or $VIX_WORKSPACE)")
     p.add_argument("--adapter", choices=["auto", "fiftyone", "memory"], default="auto")
     p.add_argument("--log-level", default="INFO")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=False)  # bare `vix` -> golden path (U1), not an error
 
     sp = sub.add_parser("ingest", help="import a folder of images into the dataset")
     sp.add_argument("folder")
@@ -153,6 +164,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     srq = sub.add_parser("review-queue", help="unified risk-ranked review queue (+ plain-language why)")
     srq.add_argument("--top", type=int, default=50)
+
+    sub.add_parser("status", help="where am I in the loop + the suggested next command")
 
     sau = sub.add_parser("audit", help="filter the append-only decision log")
     sau.add_argument("--since")
@@ -333,6 +346,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if not getattr(args, "cmd", None):  # bare `vix` -> the golden path on-ramp (U1), not the verb wall
+        print(_QUICKSTART)
+        return 0
     cfg = Config(workspace=args.workspace) if args.workspace else Config()
     cfg.ensure_dirs()
     # share one absolute workspace across CLI and any in-process App operators (vix app / verify-gui)
@@ -471,6 +487,17 @@ def _main(argv: list[str] | None = None) -> int:
     elif args.cmd == "review-queue":
         for r in pipeline.review_queue(adapter, cfg, args.top):
             print(f"{r['id']}  risk={r['risk']:.3f}  {r['why']}")
+
+    elif args.cmd == "status":
+        st = pipeline.status(adapter, cfg)
+        c = st["counts"]
+        print(f"工作區:{cfg.workspace}")
+        print(f"樣本 {c['total']}(golden {c['golden']} / anchor {c['anchor']} / review {c['review']} / "
+              f"rejected {c['rejected']} / eval {c['eval']} / admitted {c['admitted']})")
+        print(f"偵測={'有' if st['has_detections'] else '無'}  嵌入={'有' if st['has_embeddings'] else '無'}  "
+              f"門檻={'有' if st['has_thresholds'] else '無'}  已路由={'是' if st['routed'] else '否'}  "
+              f"eval={'有' if st['has_eval'] else '無'}")
+        print(f"\n下一步 → {st['next']['cmd']}")
 
     elif args.cmd == "audit":
         # friendly aliases: resolutions are logged as `review`; removals as `harmful_remove`

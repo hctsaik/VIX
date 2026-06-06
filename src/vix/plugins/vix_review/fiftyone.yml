@@ -9,3 +9,4 @@ operators:
   - explain_sample
 panels:
   - vix_report
+  - vix_queue
