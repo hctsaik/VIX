@@ -27,11 +27,15 @@ class DatasetExporter:
         img_dir.mkdir(parents=True, exist_ok=True)
         lbl_dir.mkdir(parents=True, exist_ok=True)
         n_images = n_labels = n_skipped = 0
+        used: dict[str, int] = {}  # disambiguate colliding basenames across source subdirs (no silent overwrite)
         for src_path, dets in recs:
             src = Path(src_path)
+            k = used.get(src.stem, 0)
+            used[src.stem] = k + 1
+            stem = src.stem if k == 0 else f"{src.stem}_{k}"
             n_images += 1
             if copy_images and src.exists():
-                shutil.copy2(src, img_dir / src.name)
+                shutil.copy2(src, img_dir / f"{stem}{src.suffix}")
             lines: list[str] = []
             for d in dets:
                 if d.label not in self.index:
@@ -40,7 +44,7 @@ class DatasetExporter:
                 b = d.bbox
                 lines.append(f"{self.index[d.label]} {b.cx:.6f} {b.cy:.6f} {b.w:.6f} {b.h:.6f}")
                 n_labels += 1
-            (lbl_dir / f"{src.stem}.txt").write_text(
+            (lbl_dir / f"{stem}.txt").write_text(
                 ("\n".join(lines) + "\n") if lines else "", encoding="utf-8"
             )
         return n_images, n_labels, n_skipped
