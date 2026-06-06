@@ -118,6 +118,27 @@ def cv_pair_separability(emb_i, emb_j, folds: int = 5, k: int | None = None,
     return (round(frozen, 4), round(adapted, 4), n_min)
 
 
+def projection_gate(pairs: list[dict], min_gain: float = 0.0, tol: float = 0.02) -> tuple[bool, list, dict]:
+    """Decide whether enabling the projection across the stack is SAFE (gt-consistency #1).
+    GO only if macro separability improves (mean adapted_sep_err < mean frozen − min_gain) AND no
+    class pair regresses by more than ``tol``. Mirrors challenge-guard: never enable something that
+    quietly makes a pair worse. Returns (go, blocking_reasons, summary)."""
+    if not pairs:
+        return (False, ["無類別對可驗證(需 ≥2 類 golden)"], {})
+    fr = [p["frozen_sep_err"] for p in pairs]
+    ad = [p["adapted_sep_err"] for p in pairs]
+    macro_fr, macro_ad = sum(fr) / len(fr), sum(ad) / len(ad)
+    regressed = [p["pair"] for p in pairs if p["adapted_sep_err"] > p["frozen_sep_err"] + tol]
+    reasons = []
+    if macro_ad >= macro_fr - min_gain:  # require a real gain; equal => no reason to enable
+        reasons.append(f"macro 可分性未改善(frozen sep_err {macro_fr:.3f} → adapted {macro_ad:.3f})")
+    if regressed:
+        reasons.append(f"{len(regressed)} 對退步 >{tol}:{regressed[:5]}")
+    summary = {"macro_frozen": round(macro_fr, 4), "macro_adapted": round(macro_ad, 4),
+               "n_regressed": len(regressed), "n_rescued": sum(1 for p in pairs if p.get("rescued"))}
+    return (not reasons, reasons, summary)
+
+
 def save_projection(path, proj: dict) -> None:
     if proj.get("W") is None:
         raise ValueError("no projection to save (need >=2 classes)")

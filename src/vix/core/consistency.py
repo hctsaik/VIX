@@ -151,10 +151,15 @@ def _attribute(li: str, lj: str, *, ni: int, nj: int, k: int, sep_err: float, se
 
 def consistency_findings(emb_by_class: dict, confusion: dict | None = None,
                          n_gt: dict | None = None, max_pairs: int = 20,
-                         min_sep_report: float = 0.2) -> list[dict]:
+                         min_sep_report: float = 0.2, adapt_rescued: dict | None = None) -> list[dict]:
     """Per class-pair attribution over golden embeddings (+ optional eval confusion).
     Orients each pair toward its stronger model-confusion direction. Keeps only actionable pairs
-    (a verdict beyond 'clean', or sep_err high enough to be worth showing). Sorted worst-first."""
+    (a verdict beyond 'clean', or sep_err high enough to be worth showing). Sorted worst-first.
+
+    ``adapt_rescued`` (from a saved adapt-embedding report; {frozenset(pair): rescued_bool}): when a
+    pair the consistency layer calls a taxonomy/inseparable dead-end was RESCUED by a learned
+    projection (CV-verified in adapt-embedding), flip it to representation_fixable — "don't merge,
+    it's an encoder limit, not a definition dead-end"."""
     classes = sorted(c for c, e in emb_by_class.items() if np.atleast_2d(np.asarray(e)).shape[0] >= 1)
     conf = confusion or {}
     out: list[dict] = []
@@ -171,6 +176,13 @@ def consistency_findings(emb_by_class: dict, confusion: dict | None = None,
                 li, lj, ni, nj, O, O_ci = ci, cj, st["ni"], st["nj"], st["O_ij"], st["O_ij_ci"]
             f = _attribute(li, lj, ni=ni, nj=nj, k=st["k"], sep_err=st["sep_err"], sep_ci=st["sep_ci"],
                            O=O, O_ci=O_ci, confusion=confusion, n_gt=n_gt)
+            if adapt_rescued is not None:
+                resc = adapt_rescued.get(frozenset(f["pair"]))
+                if resc is not None:
+                    f["representation_fixable"] = bool(resc)
+                    if resc and f["verdict"] in ("taxonomy", "taxonomy_watch", "inseparable_embedding"):
+                        f["action"] = (f"別 merge:學到的投影已能分開 {li}/{lj}(CV 驗證)→ 表徵問題,"
+                                       f"非 taxonomy 死路;套用 adapt-embedding 或換更強編碼器")
             if f["verdict"] in ("clean", "separable_embedding") and f["sep_err"] <= min_sep_report:
                 continue
             out.append(f)

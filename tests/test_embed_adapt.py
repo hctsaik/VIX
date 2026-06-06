@@ -8,7 +8,7 @@ from vix import pipeline
 from vix.adapters.memory import InMemoryAdapter
 from vix.config import Config
 from vix.core.embed_adapt import (cv_pair_separability, fit_projection, load_projection,
-                                  save_projection, transform)
+                                  projection_gate, save_projection, transform)
 from vix.types import BBox, Detection, Tag
 
 
@@ -73,3 +73,87 @@ def test_pipeline_adapt_embedding_rescues_and_saves(tmp_path):
     pair = next(p for p in r["pairs"] if set(p["pair"]) == {"a", "b"})
     assert pair["rescued"] and pair["adapted_sep_err"] < pair["frozen_sep_err"]
     assert load_projection(cfg.workspace / "embed_projection.npz") is not None
+
+
+# --- Feature 1: gate-validated apply across the stack ---
+
+def test_projection_gate_go_and_nogo():
+    go, _r, s = projection_gate([{"pair": ["a", "b"], "frozen_sep_err": 0.45, "adapted_sep_err": 0.10, "rescued": True}])
+    assert go and s["n_rescued"] == 1
+    nogo, reasons, _ = projection_gate([{"pair": ["a", "b"], "frozen_sep_err": 0.20, "adapted_sep_err": 0.30, "rescued": False}])
+    assert not nogo and reasons                                    # a pair regressed -> NO-GO
+    flat, _r2, _ = projection_gate([{"pair": ["a", "b"], "frozen_sep_err": 0.30, "adapted_sep_err": 0.30, "rescued": False}])
+    assert not flat                                                # no macro gain -> NO-GO
+
+
+def test_adapt_embedding_gate_go_enables(tmp_path):
+    cfg = Config(workspace=tmp_path / "ws"); cfg.ensure_dirs()
+    ad = InMemoryAdapter()
+    for i, v in enumerate(_A):
+        ad.seed(f"a{i}", "a.png", [_det("a", v)], tags=[Tag.GOLDEN])
+    for i, v in enumerate(_B):
+        ad.seed(f"b{i}", "b.png", [_det("b", v)], tags=[Tag.GOLDEN])
+    r = pipeline.adapt_embedding(ad, cfg, save=True, enable=True)
+    assert r["gate"]["go"] and r["enabled"]
+    assert cfg.embed_projection_enabled_path.exists() and cfg.adapt_report_path.exists()
+
+
+def test_adapt_embedding_nogo_does_not_enable(tmp_path):
+    cfg = Config(workspace=tmp_path / "ws"); cfg.ensure_dirs()
+    ad = InMemoryAdapter()
+    rng = np.random.RandomState(7)  # already cleanly separable -> frozen sep_err ~0 -> no gain -> gate NO-GO
+    a = np.array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0.]) + 0.05 * rng.randn(80, 10)
+    b = np.array([0, 1, 0, 0, 0, 0, 0, 0, 0, 0.]) + 0.05 * rng.randn(80, 10)
+    for i, v in enumerate(a):
+        ad.seed(f"a{i}", "a.png", [_det("a", v)], tags=[Tag.GOLDEN])
+    for i, v in enumerate(b):
+        ad.seed(f"b{i}", "b.png", [_det("b", v)], tags=[Tag.GOLDEN])
+    r = pipeline.adapt_embedding(ad, cfg, save=True, enable=True)
+    assert not r["gate"]["go"] and not r["enabled"]
+    assert not cfg.embed_projection_enabled_path.exists()         # gate NO-GO -> never enabled
+
+
+def _tri(seed):
+    rng = np.random.RandomState(seed)
+    return (np.array([2, 0, 0, 0.]) + 0.1 * rng.randn(8, 4),
+            np.array([0, 2, 0, 0.]) + 0.1 * rng.randn(8, 4),
+            np.array([0, 0, 2, 0.]) + 0.1 * rng.randn(8, 4))
+
+
+def test_active_projection_dim_and_enable_guard(tmp_path):
+    cfg = Config(workspace=tmp_path / "ws"); cfg.ensure_dirs()
+    # 2-class projection -> 1-d -> guarded out (cosine ranking degenerate) even when enabled
+    save_projection(cfg.embed_projection_path, fit_projection(np.vstack([_A, _B]), np.array([0] * 80 + [1] * 80)))
+    cfg.embed_projection_enabled_path.write_text("gate=GO", encoding="utf-8")
+    assert pipeline._active_projection(cfg) is None               # out_dim 1 -> skip
+    # 3-class projection -> 2-d -> active
+    A, B, C = _tri(0)
+    X = np.vstack([A, B, C]); y = np.array(["a"] * 8 + ["b"] * 8 + ["c"] * 8)
+    save_projection(cfg.embed_projection_path, fit_projection(X, y))
+    assert pipeline._active_projection(cfg) is not None
+    # not enabled -> None regardless
+    cfg.embed_projection_enabled_path.unlink()
+    assert pipeline._active_projection(cfg) is None
+
+
+def test_error_mine_applies_projection_when_enabled(tmp_path):
+    import json
+    cfg = Config(workspace=tmp_path / "ws"); cfg.ensure_dirs()
+    ad = InMemoryAdapter()
+    A, B, C = _tri(1)
+    for grp, lab in ((A, "a"), (B, "b"), (C, "c")):                # golden for the projection (3 classes -> 2-d)
+        for i, v in enumerate(grp):
+            ad.seed(f"{lab}{i}", "g.png", [_det(lab, v)], tags=[Tag.GOLDEN])
+    save_projection(cfg.embed_projection_path, fit_projection(
+        np.vstack([A, B, C]), np.array(["a"] * 8 + ["b"] * 8 + ["c"] * 8)))
+    cfg.embed_projection_enabled_path.write_text("gate=GO", encoding="utf-8")
+    ad.seed("e", "e.png", [_det("a", A[0])], tags=[Tag.EVAL])      # error image carries an 'a' region
+    ad.seed("c0", "c0.png", [_det("a", A[1])], tags=[])           # near 'a' -> should rank first
+    ad.seed("c1", "c1.png", [_det("b", B[0])], tags=[])           # near 'b'
+    (tmp_path / "res.jsonl").write_text(json.dumps(
+        {"vix_hash": "e", "gt": [{"label": "a", "bbox": [0.5, 0.5, 0.4, 0.4]}], "pred": []}), encoding="utf-8")
+    pipeline.eval_ingest(ad, cfg, str(tmp_path / "res.jsonl"))
+    mined = pipeline.error_mine(ad, cfg, top=5)
+    ids = [m["id"].split(":")[0] for m in mined]
+    assert ids and ids.index("c0") < ids.index("c1")             # projected ranking still correct
+    assert any("投影" in m["why"] for m in mined)                 # projection path was applied

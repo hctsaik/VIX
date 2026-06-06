@@ -465,13 +465,15 @@ vix set-eval-baseline --protect bubble --protect-drop 0.05 --map-drop 0.02
 <!-- ============ B11 ============ -->
 <h2 class="sec" id="b11">B11. 領域自適應 embedding:<code>adapt-embedding</code> <span class="tag vix">VIX 客製</span></h2>
 <p>B10 可能判一對類別「在目前 embedding 空間不可分」——但凍結 DINOv2 是通用編碼器,這可能是<b>編碼器</b>的限制,不是真的 taxonomy 死路。本指令用 golden GT 在凍結 DINO 上學一個<b>輕量監督投影</b>(正規化 LDA:PCA 預降維 + shrinkage),把「不可分」變成可證偽的問題:<b>學個投影後分不分得開?</b> 分得開 → 是表徵問題(可修),不是定義死路。</p>
-<pre><code>vix adapt-embedding [--save]      # 學投影、逐對報告 凍結→投影 可分性、--save 持久化 embed_projection.npz</code></pre>
+<pre><code>vix adapt-embedding --save           # 學投影、逐對 CV 報告 凍結→投影 可分性、存 embed_projection.npz + adapt_report.json + 算 gate
+vix adapt-embedding --save --enable  # gate=GO 才寫啟用標記;之後 error-mine 在投影空間排序、consistency 顯示「可修」</code></pre>
 <ul>
   <li><b>離線、閉式、$0</b>:幾個矩陣運算,<b>不是訓練 YOLO</b>(秒級 CPU)。</li>
-  <li><b>誠實</b>:投影前/後可分性用 <b>k-fold 交叉驗證</b>(投影只在 train fold 上 fit)——在同一批點上 fit 又評估會假性可分,CV 是防過擬合的把關。真正不可分的對<b>不會</b>被假性救回。</li>
-  <li>逐對輸出 <code>凍結 sep_err → 投影 sep_err (Δ)</code> 與 <b>rescued</b> 旗標(凍結&gt;0.35 不可分 → 投影後 ≤0.35 可分)。</li>
+  <li><b>誠實</b>:投影前/後可分性用 <b>k-fold 交叉驗證</b>(投影只在 train fold fit)——同一批點 fit 又評估會假性可分,CV 是防過擬合把關。真正不可分的對<b>不會</b>被假性救回。</li>
+  <li>逐對輸出 <code>凍結 sep_err → 投影 sep_err (Δ)</code> + <b>rescued</b>(凍結&gt;0.35 → 投影後 ≤0.35)。</li>
+  <li><b>Gate(套用前驗證):</b>macro 可分性需改善<b>且無任一對退步</b>才 <code>GO</code>;<code>--enable</code> 只在 <code>GO</code> 時寫啟用標記(像 challenge-guard,絕不偷偷讓某對變差)。</li>
 </ul>
-<div class="warn"><b>用法銜接:</b>若 B10 <code>consistency</code> 判某對 <b>taxonomy / inseparable</b>,先跑 <code>adapt-embedding</code> 看是否 <b>rescued</b>——救得回 = 表徵問題(別 merge,這對其實可分),救不回才是真的定義死路。<br><b>限制:</b>DINO 為 768 維、golden 樣本少時 PCA 預降維可能丟掉低變異的判別方向(已 shrinkage 緩解);投影目前作為<b>診斷 + 已存 artifact</b>,把它套用到 routing/bank-audit/error-mine 全 stack(需在投影空間重校準)是<b>下一步</b>。</div>
+<div class="warn"><b>啟用後的套用(gate-validated):</b>① <code>consistency</code>:被救回的對,<code>taxonomy</code>/死路判定自動翻成 <b>representation_fixable</b>(「別 merge,學到的投影已能分開 → 表徵問題」)。② <code>error-mine</code>:候選在<b>投影(defect-discriminative)空間</b>排序,更聚焦真正失敗處。<br><b>邊界:</b>error-mine 只在投影 <b>≥2 維</b>(≥3 類)時套用(2 類→1 維,cosine 排序退化)。把投影套到<b>校準路徑</b>(routing/threshold/bank-audit,需在投影空間重校準閾值)仍是下一步——須經 gate/eval 驗證不退步才打開。DINO 768 維、golden 少時 PCA 可能丟低變異判別方向(shrinkage 緩解)。</div>
 
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>

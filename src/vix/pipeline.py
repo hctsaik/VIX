@@ -763,6 +763,31 @@ def eval_ingest(adapter, cfg, results_path, iou_thr=0.5):
     return res
 
 
+def _adapt_rescued(cfg):
+    """{frozenset(pair): rescued} from a saved adapt-embedding report, else None."""
+    if not cfg.adapt_report_path.exists():
+        return None
+    try:
+        rep = json.loads(cfg.adapt_report_path.read_text(encoding="utf-8"))
+        return {frozenset(p["pair"]): bool(p.get("rescued")) for p in rep.get("pairs", [])}
+    except (ValueError, OSError):
+        return None
+
+
+def _active_projection(cfg):
+    """Load the LDA projection IFF it exists, is gate-enabled (marker or env), and has dim>=2
+    (1-d LDA breaks cosine ranking, so we only project multi-class spaces). Else None."""
+    if not cfg.embed_projection_path.exists():
+        return None
+    if not (cfg.use_embed_projection or cfg.embed_projection_enabled_path.exists()):
+        return None
+    from .core.embed_adapt import load_projection
+    proj = load_projection(cfg.embed_projection_path)
+    if proj is None or proj.get("W") is None or np.asarray(proj["W"]).shape[1] < 2:
+        return None
+    return proj
+
+
 def _match_box_emb(box, det_embs, thr):
     """Best stored-detection embedding whose box IoU>=thr with the (external) error box, else None.
     The eval JSON's pred/GT boxes carry no embedding and may come from a different run, so we
@@ -825,17 +850,22 @@ def error_mine(adapter, cfg, top=20, emb_match_iou=0.5, fn_match_iou=0.1, for_cl
             n_fallback += 1
     if not err_emb:
         return []
-    E = _l2norm(np.vstack(err_emb))
+    from .core.embed_adapt import transform as _proj_tx
+    proj = _active_projection(cfg)  # domain-adapted embedding (gate-enabled, dim>=2) -> sharper ranking
+    EM = np.vstack(err_emb)
+    E = _l2norm(_proj_tx(proj, EM) if proj else EM)
     cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL, Tag.REJECTED])
+    tag = ",已套用 domain-adapted 投影" if proj else ""
     ranked = []
     for it in cands:
-        v = _l2norm(np.asarray(it.embedding, float)[None, :])[0]
-        sim = float((E @ v).max())  # cosine to the nearest error region
+        raw = np.asarray(it.embedding, float)[None, :]
+        v = _l2norm(_proj_tx(proj, raw) if proj else raw)[0]
+        sim = float((E @ v).max())  # cosine to the nearest error region (in projected space if enabled)
         ranked.append({"id": it.id, "closeness": round(sim, 4),
-                       "why": f"接近模型驗證集誤差區(cos {sim:.3f});標此張最可能補到模型實際失敗處"})
+                       "why": f"接近模型驗證集誤差區(cos {sim:.3f}{tag});標此張最可能補到模型實際失敗處"})
     ranked.sort(key=lambda r: -r["closeness"])
-    log.info("error_mine: %d candidates vs %d error regions (%d box-matched, %d image-mean fallback)",
-             len(cands), len(err_emb), n_box, n_fallback)
+    log.info("error_mine: %d candidates vs %d error regions (%d box-matched, %d fallback, projection=%s)",
+             len(cands), len(err_emb), n_box, n_fallback, bool(proj))
     return ranked[:top]
 
 
@@ -972,7 +1002,8 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     from .core.consistency import consistency_findings  # GT x embedding attribution (taxonomy/model/label)
     data["consistency"] = consistency_findings(
         _emb_by_class(adapter, {Tag.GOLDEN}),
-        (ev.get("confusion") if ev else None), (ev.get("n_gt") if ev else None))
+        (ev.get("confusion") if ev else None), (ev.get("n_gt") if ev else None),
+        adapt_rescued=_adapt_rescued(cfg))
 
     out = Path(out_path or (cfg.workspace / "weakness_report.md"))
     out.write_text(render_weakness_report(data), encoding="utf-8")
@@ -998,7 +1029,8 @@ def consistency(adapter, cfg, max_pairs=20):
     if cfg.eval_results_path.exists():
         ev = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
         confusion, n_gt = ev.get("confusion", {}), ev.get("n_gt", {})
-    findings = consistency_findings(emb_by_class, confusion, n_gt, max_pairs=max_pairs)
+    findings = consistency_findings(emb_by_class, confusion, n_gt, max_pairs=max_pairs,
+                                    adapt_rescued=_adapt_rescued(cfg))
     DecisionLog(cfg.decision_log_path).append(
         "consistency", decision=str(len(findings)),
         extra={"n_classes": len(emb_by_class), "has_eval": confusion is not None,
@@ -1008,13 +1040,15 @@ def consistency(adapter, cfg, max_pairs=20):
     return {"findings": findings, "n_classes": len(emb_by_class), "has_eval": confusion is not None}
 
 
-def adapt_embedding(adapter, cfg, save=False, max_pca=64, folds=5):
+def adapt_embedding(adapter, cfg, save=False, enable=False, max_pca=64, folds=5, min_gain=0.0, tol=0.02):
     """Learn a lightweight supervised projection of frozen DINOv2 (regularized LDA on golden GT) and
     report, per class-pair, whether a pair that's inseparable in frozen DINO becomes SEPARABLE after
     adaptation (a 'rescue' => representation problem, not a taxonomy dead-end). Before/after
-    separability is k-fold CROSS-VALIDATED (projection refit on train folds only) to stay honest on
-    small GT. Offline, closed-form, NOT YOLO training. ``--save`` persists embed_projection.npz."""
-    from .core.embed_adapt import cv_pair_separability, fit_projection, save_projection
+    separability is k-fold CROSS-VALIDATED (refit on train folds only) to stay honest on small GT.
+    A gate decides whether enabling the projection across the stack is safe (macro separability up,
+    no per-pair regression). ``save`` persists embed_projection.npz + adapt_report.json; ``enable``
+    writes the gate-validated enable marker ONLY if the gate says GO. Offline; NOT YOLO training."""
+    from .core.embed_adapt import (cv_pair_separability, fit_projection, projection_gate, save_projection)
 
     emb_by_class = {c: np.atleast_2d(np.asarray(e, float))
                     for c, e in _emb_by_class(adapter, {Tag.GOLDEN}).items()}
@@ -1024,6 +1058,7 @@ def adapt_embedding(adapter, cfg, save=False, max_pca=64, folds=5):
     X = np.vstack([emb_by_class[c] for c in classes])
     y = np.concatenate([[c] * emb_by_class[c].shape[0] for c in classes])
     proj = fit_projection(X, y, max_pca=max_pca)
+    out_dim = int(proj["W"].shape[1]) if proj.get("W") is not None else 0
 
     pairs = []
     for a in range(len(classes)):
@@ -1031,23 +1066,33 @@ def adapt_embedding(adapter, cfg, save=False, max_pca=64, folds=5):
             ci, cj = classes[a], classes[b]
             fr, ad, n_min = cv_pair_separability(emb_by_class[ci], emb_by_class[cj], folds=folds, max_pca=max_pca)
             pairs.append({"pair": [ci, cj], "frozen_sep_err": fr, "adapted_sep_err": ad, "n_min": n_min,
-                          "rescued": bool(fr > 0.35 and ad <= 0.35),
-                          "delta": round(fr - ad, 4)})
+                          "rescued": bool(fr > 0.35 and ad <= 0.35), "delta": round(fr - ad, 4)})
     pairs.sort(key=lambda p: -p["delta"])
-    saved = None
-    if save:
-        saved = str(cfg.workspace / "embed_projection.npz")
-        save_projection(saved, proj)
     n_rescued = sum(p["rescued"] for p in pairs)
+    go, reasons, summary = projection_gate(pairs, min_gain=min_gain, tol=tol)
+
+    saved = enabled = False
+    if save:
+        save_projection(cfg.embed_projection_path, proj)
+        cfg.adapt_report_path.write_text(json.dumps(
+            {"out_dim": out_dim, "pairs": pairs, "gate": {"go": go, "reasons": reasons, **summary}},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        saved = True
+    if enable:  # gate-validated: only flip the switch if enabling is safe
+        if go and cfg.embed_projection_path.exists():
+            cfg.embed_projection_enabled_path.write_text("gate=GO\n", encoding="utf-8")
+            enabled = True
+        else:
+            log.warning("adapt_embedding: --enable 但 gate=%s(%s)→ 不啟用(投影仍可作診斷)", "GO" if go else "NO-GO", reasons)
     DecisionLog(cfg.decision_log_path).append(
-        "adapt_embedding", decision=str(len(classes)),
-        extra={"out_dim": int(proj["W"].shape[1]) if proj.get("W") is not None else 0,
-               "n_pairs": len(pairs), "n_rescued": n_rescued, "saved": bool(save),
-               "note": "supervised LDA projection of frozen DINOv2 from golden GT; before/after CV'd; offline, no YOLO training"})
-    log.info("adapt_embedding: %d classes -> %dd projection, %d/%d pairs rescued, saved=%s",
-             len(classes), int(proj["W"].shape[1]) if proj.get("W") is not None else 0, n_rescued, len(pairs), bool(save))
-    return {"classes": classes, "out_dim": int(proj["W"].shape[1]) if proj.get("W") is not None else 0,
-            "pairs": pairs, "n_rescued": n_rescued, "saved": saved}
+        "adapt_embedding", decision=("GO" if go else "NO-GO"),
+        extra={"out_dim": out_dim, "n_pairs": len(pairs), "n_rescued": n_rescued, "saved": saved,
+               "enabled": enabled, "gate": {"go": go, "reasons": reasons, **summary},
+               "note": "supervised LDA projection of frozen DINOv2 from golden GT; CV'd; offline, no YOLO training"})
+    log.info("adapt_embedding: %d classes -> %dd, %d/%d rescued, gate=%s, saved=%s, enabled=%s",
+             len(classes), out_dim, n_rescued, len(pairs), "GO" if go else "NO-GO", saved, enabled)
+    return {"classes": classes, "out_dim": out_dim, "pairs": pairs, "n_rescued": n_rescued,
+            "gate": {"go": go, "reasons": reasons, **summary}, "saved": saved, "enabled": enabled}
 
 
 def bank_audit(adapter, cfg, defect_tag=Tag.GOLDEN, reflection_tag=Tag.REJECTED, normal_tag=None,

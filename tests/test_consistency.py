@@ -57,6 +57,15 @@ def test_verdict_label_noise_overlap_without_confusion():
     assert pair["verdict"] == "label_noise"
 
 
+def test_representation_fixable_overrides_taxonomy_when_rescued():
+    # a taxonomy/inseparable pair that adapt-embedding rescued -> flip to representation-fixable
+    rescued = {frozenset({"a", "b"}): True}
+    f = consistency_findings({"a": _OVL_A, "b": _OVL_B}, confusion={"a->b": 10}, n_gt={"a": 20, "b": 20},
+                             adapt_rescued=rescued)
+    pair = next(x for x in f if set(x["pair"]) == {"a", "b"})
+    assert pair.get("representation_fixable") is True and "別 merge" in pair["action"]
+
+
 def test_insufficient_support_small_gt():
     f = consistency_findings({"a": _OVL_A[:5], "b": _OVL_B[:5]}, confusion={"a->b": 3}, n_gt={"a": 5, "b": 5})
     pair = next(x for x in f if set(x["pair"]) == {"a", "b"})

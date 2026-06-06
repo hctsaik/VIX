@@ -44,6 +44,10 @@ class Config:
     knn_k: int = field(default_factory=lambda: _env_int("VIX_KNN_K", 10))
     conf_percentile: float = field(default_factory=lambda: _env_float("VIX_CONF_PCT", 5.0))
     dist_percentile: float = field(default_factory=lambda: _env_float("VIX_DIST_PCT", 95.0))
+    # domain-adapted embedding (gt-consistency #2): apply the learned LDA projection to ranking
+    # consumers (error-mine). Off unless explicitly enabled AND the projection passed its gate.
+    use_embed_projection: bool = field(
+        default_factory=lambda: _env("VIX_USE_PROJECTION", "0") not in ("0", "", "false", "False"))
 
     # --- guard (frozen reference) thresholds ---
     drift_shift_threshold: float = field(default_factory=lambda: _env_float("VIX_DRIFT_SHIFT", 0.15))
@@ -80,6 +84,18 @@ class Config:
     @property
     def eval_baseline_path(self) -> Path:  # frozen mAP/AP + eval_set_hash for challenge-guard
         return self.workspace / "eval_baseline.json"
+
+    @property
+    def embed_projection_path(self) -> Path:  # saved LDA projection (domain-adapted embedding)
+        return self.workspace / "embed_projection.npz"
+
+    @property
+    def adapt_report_path(self) -> Path:  # per-pair frozen->adapted separability + gate verdict
+        return self.workspace / "adapt_report.json"
+
+    @property
+    def embed_projection_enabled_path(self) -> Path:  # gate-validated enable marker (written iff gate GO)
+        return self.workspace / "embed_projection.enabled"
 
     @property
     def lancedb_dir(self) -> Path:
