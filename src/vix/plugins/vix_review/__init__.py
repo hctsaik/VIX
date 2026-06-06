@@ -30,14 +30,26 @@ def _adapter(ctx):
 
 
 def _selected_hashes(ctx):
-    return [ctx.dataset[sid]["vix_hash"] for sid in (ctx.selected or [])]
+    # skip selected samples that carry no vix_hash (e.g. added outside VIX) instead of KeyError-crashing
+    out = []
+    for sid in (ctx.selected or []):
+        try:
+            h = ctx.dataset[sid].get_field("vix_hash")
+        except Exception:  # noqa: BLE001 - a non-VIX / vanished sample must not crash the operator
+            h = None
+        if h:
+            out.append(h)
+    return out
 
 
 def _sample_id_for_hash(ctx, h):
     """vix_hash -> FiftyOne sample id (inverse of _selected_hashes). The one bit of live-only glue
-    the queue panel needs to navigate; kept tiny so it's the obvious thing to find if FiftyOne drifts."""
-    s = ctx.dataset.match({"vix_hash": h}).first()
-    return s.id if s else None
+    the queue panel needs to navigate; kept tiny so it's the obvious thing to find if FiftyOne drifts.
+    Returns None for a vanished/unknown hash (.first() raises on an empty view) so inspect no-ops."""
+    try:
+        return ctx.dataset.match({"vix_hash": h}).first().id
+    except Exception:  # noqa: BLE001 - empty match / vanished sample -> navigate nowhere, never crash
+        return None
 
 
 class ConfirmGolden(foo.Operator):
@@ -53,12 +65,13 @@ class ConfirmGolden(foo.Operator):
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
         label = ctx.params.get("label") or None
-        n = 0
-        for h in _selected_hashes(ctx):
+        hashes = _selected_hashes(ctx)
+        if not hashes:  # parity with explain_sample: a friendly message, never a phantom 0-write
+            return {"error": "請先在格狀檢視選取影像"}
+        for h in hashes:
             pipeline.resolve_review(ad, cfg, h, "confirm", label, reviewer_id=ctx.user_id or "reviewer")
-            n += 1
         ctx.ops.reload_dataset()
-        return {"confirmed": n}
+        return {"confirmed": len(hashes)}
 
 
 class DismissFalseAlarm(foo.Operator):
@@ -68,12 +81,13 @@ class DismissFalseAlarm(foo.Operator):
 
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
-        n = 0
-        for h in _selected_hashes(ctx):
+        hashes = _selected_hashes(ctx)
+        if not hashes:
+            return {"error": "請先在格狀檢視選取影像"}
+        for h in hashes:
             pipeline.resolve_review(ad, cfg, h, "false_alarm", reviewer_id=ctx.user_id or "reviewer")
-            n += 1
         ctx.ops.reload_dataset()
-        return {"dismissed": n}
+        return {"dismissed": len(hashes)}
 
 
 class ExplainSample(foo.Operator):
@@ -123,7 +137,12 @@ class VixReportPanel(foo.Panel):
 
     def on_worklist(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
-        pipeline.weakness_report(ad, cfg, worklist=True)  # tag vixq:* so saved views become clickable
+        try:  # tag vixq:* so saved views become clickable — must not crash on a no-golden dataset
+            pipeline.weakness_report(ad, cfg, worklist=True)
+        except Exception as exc:  # noqa: BLE001
+            ctx.panel.state.md = (f"# VIX 弱點報告\n\n標記工作清單失敗:`{exc}`\n\n"
+                                  "需先有 golden,並(選用)`vix eval-ingest <val.jsonl>`。")
+            return
         ctx.panel.state.md = _report_md(ctx)
         ctx.ops.reload_dataset()
 
@@ -183,7 +202,11 @@ class VixQueuePanel(foo.Panel):
         if not h:
             return
         cfg, ad = Config(), _adapter(ctx)
-        pipeline.resolve_review(ad, cfg, h, decision, reviewer_id=ctx.user_id or "reviewer")
+        try:  # a stale/unknown row (resolve_review fail-closes via _require_known) must not crash the panel
+            pipeline.resolve_review(ad, cfg, h, decision, reviewer_id=ctx.user_id or "reviewer")
+        except Exception as exc:  # noqa: BLE001
+            ctx.panel.state.err = f"此列無法處理({exc});請按「重新整理佇列」"
+            return
         self.on_load(ctx)  # resolved item drops out of the queue (review_queue excludes golden/rejected)
         ctx.ops.reload_dataset()
 

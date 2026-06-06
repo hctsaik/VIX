@@ -1,0 +1,165 @@
+"""Genuine BROWSER (Playwright) GUI scenarios against a live FiftyOne App (Tier-2; needs fiftyone +
+Mongo + a Chromium install). Complements tests/test_gui_e2e.py (handler/ledger-anchored): this layer
+proves the App actually mounts and renders in a real browser DOM, that both VIX panels open in the
+App, and that an in-browser operator execution writes exactly one chained ledger event.
+
+Launches one App on a dedicated port (module-scoped) and drives it with Playwright using
+wait_until="domcontentloaded" (the FiftyOne websocket never goes idle -> networkidle would hang).
+Skips cleanly if fiftyone/playwright/chromium are unavailable.
+"""
+
+import os
+import re
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("fiftyone")
+pytest.importorskip("playwright.sync_api")
+
+PORT = 5153
+URL = f"http://localhost:{PORT}"
+
+
+def _reviews(cfg):
+    from vix.core.decision_log import DecisionLog
+    return [r for r in DecisionLog(cfg.decision_log_path).read_all() if r.get("event") == "review"]
+
+
+@pytest.fixture(scope="module")
+def app(tmp_path_factory):
+    os.environ["FIFTYONE_PLUGINS_DIR"] = str(Path(__file__).resolve().parent.parent / "src" / "vix" / "plugins")
+    os.environ.setdefault("FIFTYONE_DO_NOT_TRACK", "true")
+    os.environ["VIX_WORKSPACE"] = str(tmp_path_factory.mktemp("guiws").resolve())
+
+    import fiftyone as fo
+    from playwright.sync_api import sync_playwright
+
+    from vix import pipeline, verification as V
+    from vix.adapters.fiftyone_adapter import FiftyOneAdapter
+    from vix.config import Config
+
+    cfg = Config()
+    cfg.ensure_dirs()
+    cfg.embedding_backend = "pixel_fallback"
+    ds = V._build_dataset(fo)
+    ad = FiftyOneAdapter(cfg, dataset_name=V.DATASET)
+    pipeline.calibrate(ad, cfg)
+    pipeline.route(ad, cfg)
+    ds.reload()
+    session = fo.launch_app(ds, remote=True, port=PORT)
+
+    import urllib.request
+    ready = False
+    for _ in range(60):
+        try:
+            urllib.request.urlopen(URL, timeout=2)
+            ready = True
+            break
+        except Exception:
+            time.sleep(1)
+
+    shots = Path(os.environ["VIX_WORKSPACE"]) / "shots"
+    shots.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch()
+        except Exception as e:  # noqa: BLE001
+            session.close()
+            pytest.skip(f"chromium unavailable: {e}")
+        page = browser.new_page(viewport={"width": 1600, "height": 1000})
+        if ready:
+            page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(12000)  # grid render (CI runners slow; the websocket never idles)
+        yield SimpleNamespace(fo=fo, session=session, page=page, ds=ds, cfg=cfg, ad=ad, shots=shots, ready=ready)
+        browser.close()
+    session.close()
+    if fo.dataset_exists(V.DATASET):
+        fo.delete_dataset(V.DATASET)
+
+
+def _open_panel(app, panel_type):
+    """Open a VIX panel beside the grid via the session spaces API, then let it render."""
+    app.session.spaces = app.fo.Space(children=[
+        app.fo.Panel(type="Samples", pinned=True),
+        app.fo.Panel(type=panel_type),
+    ])
+    app.page.wait_for_timeout(7000)
+
+
+def test_b1_app_grid_renders_in_dom(app):
+    """B1: the App serves the Mongo-backed dataset and the sample grid actually paints in the DOM."""
+    assert app.ready, "App server did not become ready"
+    app.page.screenshot(path=str(app.shots / "b1_grid.png"), full_page=True)
+    # a real grid/looker/canvas node must exist (not just a non-empty screenshot)
+    assert app.page.locator('[data-cy="looker"], [data-cy^="sample"], canvas, [data-cy="fo-grid"]').count() >= 1
+
+
+def test_b5_both_panels_open_in_the_live_app(app):
+    """B5: both VIX panels are live in the App runtime — open them side-by-side and assert both panel
+    tabs mount in the browser DOM. (This is a stronger proof than an in-process operator_exists, which
+    is import-order-fragile here; `vix verify-gui` asserts operator_exists in a clean process.)"""
+    app.session.spaces = app.fo.Space(children=[
+        app.fo.Panel(type="Samples", pinned=True),
+        app.fo.Panel(type="vix_queue"),
+        app.fo.Panel(type="vix_report"),
+    ])
+    app.page.wait_for_timeout(7000)
+    app.page.screenshot(path=str(app.shots / "b5_both_panels.png"), full_page=True)
+    body = app.page.locator("body").inner_text()
+    assert "覆核佇列" in body and "弱點" in body  # both VIX panel tabs mounted in the live App
+
+
+def test_b2_queue_panel_opens_in_browser(app):
+    """B2: the vix_queue panel mounts in the browser and renders its table surface (real DOM)."""
+    _open_panel(app, "vix_queue")
+    app.page.screenshot(path=str(app.shots / "b2_queue_panel.png"), full_page=True)
+    body = app.page.locator("body").inner_text()
+    # the panel's label and/or its table columns render in the DOM
+    assert ("覆核佇列" in body) or ("vix_hash" in body) or ("風險" in body)
+
+
+def test_b3_report_panel_opens_in_browser(app):
+    """B3: the vix_report panel mounts in the browser (its '弱點' tab renders in the DOM). The report
+    content + PROXY framing is asserted at the handler layer (test_gui02); here we prove the mount."""
+    _open_panel(app, "vix_report")
+    app.page.screenshot(path=str(app.shots / "b3_report_panel.png"), full_page=True)
+    body = app.page.locator("body").inner_text()
+    assert "弱點" in body  # the report panel ("VIX: 弱點/一致性報告") mounted in the browser DOM
+
+
+def test_b4_confirm_golden_in_browser_writes_one_ledger_event(app):
+    """B4: execute confirm_golden IN THE BROWSER (operator browser via keyboard) -> rev1 gains 'golden'
+    AND the DecisionLog gains exactly one review/confirmed event with a valid chain (ledger-anchored)."""
+    # reset spaces to the grid so the operator browser targets the selection
+    app.session.spaces = app.fo.Space(children=[app.fo.Panel(type="Samples", pinned=True)])
+    app.page.wait_for_timeout(2000)
+    rev = app.ds.match({"vix_hash": "rev1"}).first()
+    before = len(_reviews(app.cfg))
+    app.session.selected = [rev.id]
+    app.page.wait_for_timeout(1500)
+    app.page.keyboard.press("`")
+    app.page.wait_for_timeout(1200)
+    app.page.keyboard.type("confirm_golden")
+    app.page.wait_for_timeout(1200)
+    app.page.keyboard.press("Enter")
+    app.page.wait_for_timeout(2000)
+    btn = app.page.get_by_role("button", name=re.compile("execute|run|執行|送出", re.I))
+    (btn.first.click() if btn.count() else app.page.keyboard.press("Enter"))
+    app.page.screenshot(path=str(app.shots / "b4_after_confirm.png"))
+
+    from vix.core.decision_log import DecisionLog
+    ok, revs = False, []
+    for _ in range(15):  # deterministic poll for the in-browser effect
+        app.ds.reload()
+        tags = app.ds.match({"vix_hash": "rev1"}).first().tags
+        revs = _reviews(app.cfg)
+        if "golden" in tags:
+            ok = True
+            break
+        time.sleep(1)
+    assert ok, "confirm_golden did not tag rev1 golden in the browser"
+    assert len(revs) == before + 1 and revs[-1]["vix_hash"] == "rev1" and revs[-1]["decision"] == "confirmed"
+    assert DecisionLog(app.cfg.decision_log_path).verify_chain()
