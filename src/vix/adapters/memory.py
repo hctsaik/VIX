@@ -115,6 +115,10 @@ class InMemoryAdapter(DatasetAdapter):
                 cur.append(t)
         self._persist()
 
+    def remove_tags(self, vix_hash: str, tags: list[str]) -> None:
+        self._s[vix_hash]["tags"] = [t for t in self._s[vix_hash]["tags"] if t not in tags]
+        self._persist()
+
     def get_by_tag(self, tag: str) -> Iterable[tuple[str, str, list[Detection]]]:
         for h, d in self._s.items():
             if tag in d["tags"]:

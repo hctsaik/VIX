@@ -42,6 +42,9 @@ class DatasetAdapter(ABC):
     def apply_tags(self, vix_hash: str, tags: list[str]) -> None:
         """Add tags (idempotent)."""
 
+    def remove_tags(self, vix_hash: str, tags: list[str]) -> None:  # optional (un-reject / restore)
+        raise NotImplementedError("This adapter cannot remove tags")
+
     @abstractmethod
     def get_by_tag(self, tag: str) -> Iterable[tuple[str, str, list[Detection]]]:
         """Yield (vix_hash, src_path, detections) for samples carrying ``tag``."""

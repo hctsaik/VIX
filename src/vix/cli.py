@@ -179,6 +179,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("routing-diff", help="what changed between the last two routing runs")
     sdm = sub.add_parser("dismiss", help="mark samples as false alarms (excluded from review queue)")
     sdm.add_argument("ids", nargs="+")
+    srd = sub.add_parser("restore-dismissed", help="reverse a dismiss/harmful-remove (un-reject), audited")
+    srd.add_argument("ids", nargs="+")
     sub.add_parser("fp-rate", help="false-positive rate of routing vs dismissed")
     sgeo = sub.add_parser("geometry", help="bbox geometry drift between two tagged periods (W3/W4)")
     sgeo.add_argument("--from", dest="from_tag", required=True)
@@ -401,11 +403,13 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"{r['id']}  risk={r['risk']:.3f}  {r['why']}")
 
     elif args.cmd == "audit":
-        recs = pipeline.audit(cfg, args.since, args.until, args.event, args.reviewer)
+        # friendly aliases: resolutions are logged as `review`; removals as `harmful_remove`
+        event = {"resolve": "review", "remove": "harmful_remove"}.get(args.event, args.event)
+        recs = pipeline.audit(cfg, args.since, args.until, event, args.reviewer)
         for r in recs:
             print(f"{r['ts_utc']}  {r['event']}  {r.get('vix_hash','')}  "
                   f"{r.get('decision','')}  by={r.get('reviewer_id')}")
-        print(f"{len(recs)} matching records")
+        print(f"{len(recs)} matching records (時間以 UTC 比對;--since/--until 請用 UTC 或純日期)")
 
     elif args.cmd == "merge":
         overrides = dict(o.split("=", 1) for o in args.override)
@@ -461,7 +465,11 @@ def _main(argv: list[str] | None = None) -> int:
 
     elif args.cmd == "dismiss":
         n = pipeline.dismiss(adapter, cfg, args.ids)
-        print(f"dismissed {n} false alarms")
+        print(f"excluded {n} samples downstream (tag=rejected;可用 vix restore-dismissed 還原,已記稽核)")
+
+    elif args.cmd == "restore-dismissed":
+        n = pipeline.restore_dismissed(adapter, cfg, args.ids)
+        print(f"restored {n} samples (rejected 標籤已移除,記為 undismiss)")
 
     elif args.cmd == "fp-rate":
         r = pipeline.false_positive_rate(cfg)
@@ -502,6 +510,8 @@ def _main(argv: list[str] | None = None) -> int:
         rows = [json.loads(line) for line in Path(args.eval).read_text(encoding="utf-8-sig").splitlines() if line.strip()]
         res = pipeline.calibrate_confidence([r["conf"] for r in rows], [r["correct"] for r in rows], cfg)
         print(f"temperature={res['temperature']}  ECE {res['ece_before']} -> {res['ece_after']}")
+        if len(rows) < 50:
+            print(f"注:樣本過少({len(rows)}<50),溫度/ECE 估計不穩定,變化僅供參考")
 
     elif args.cmd == "label-noise":
         r = pipeline.label_noise(adapter, cfg)
@@ -609,7 +619,7 @@ def _main(argv: list[str] | None = None) -> int:
     elif args.cmd == "harmful":
         if args.remove:
             ids = pipeline.harmful_remove(adapter, cfg, top=args.top, note=args.note)
-            print(f"removed {len(ids)} harmful samples (audited)")
+            print(f"excluded {len(ids)} samples downstream (tag=rejected;可用 vix restore-dismissed 還原,已記稽核)")
         else:
             for r in pipeline.harmful(adapter, cfg, args.top):
                 print(f"{r['id']}  harm={r['harm']:.3f}  {r['reasons']}")

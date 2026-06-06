@@ -162,6 +162,13 @@ class FiftyOneAdapter(DatasetAdapter):
                 s.tags.append(t)
         s.save()
 
+    def remove_tags(self, vix_hash: str, tags: list[str]) -> None:
+        s = self._sample(vix_hash)
+        if s is None:
+            return
+        s.tags = [t for t in s.tags if t not in tags]
+        s.save()
+
     def get_by_tag(self, tag: str) -> Iterable[tuple[str, str, list[Detection]]]:
         for h, src, dets, tags in self.samples():
             if tag in tags:

@@ -85,6 +85,8 @@ def ingest(
     tags = tags or []
     if Tag.GOLDEN in tags and Tag.EVAL in tags:  # held-out eval must never be trainable
         raise ValueError("一個樣本不可同時是 golden 與 eval(eval 為 held-out 評估集,不可進訓練)")
+    # auto-apply a batch:<id> sample tag so compare/drift-type/parity/geometry work without manual tagging
+    entry_tags = list(tags) + ([f"batch:{batch_id}"] if batch_id else [])
     manifest = Manifest.load(cfg.manifest_path)
     folder = Path(folder)
     dlog = DecisionLog(cfg.decision_log_path)
@@ -92,7 +94,7 @@ def ingest(
     for p in sorted(folder.rglob("*")):
         if p.suffix.lower() in _IMAGE_EXTS:
             n_scanned += 1
-            entry = ManifestEntry.create(p, batch_id, label_version, tags or [])
+            entry = ManifestEntry.create(p, batch_id, label_version, entry_tags)
             added = manifest.append(entry)
             n_new += int(added)
             # log every submission (incl. skipped re-submissions) -> per-image history
@@ -344,7 +346,7 @@ def coverage(adapter, cfg, target=None):  # S5
 
 
 def coverage_value(adapter, cfg, radius=0.2):  # S4
-    new = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR])
+    new = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL])
     existing = _image_items(adapter, want_tags=[Tag.GOLDEN])
     res = coverage_delta(new, existing, radius)
     log.info("coverage_value: %.1f%% of %d new images cover novel regions",
@@ -353,7 +355,7 @@ def coverage_value(adapter, cfg, radius=0.2):  # S4
 
 
 def active_learn(adapter, cfg, budget):  # S6
-    cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR])
+    cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL])
     existing = _image_items(adapter, want_tags=[Tag.GOLDEN])
     ranked = active_learning_ranking(cands, existing, budget, return_reasons=True)
     for r in ranked:  # build the rationale from whichever signals are actually high (no hardcoded claim)
@@ -465,7 +467,7 @@ def health_report(adapter, cfg, out_dir, version="current", prev=None):  # S10
 
 
 def review_queue(adapter, cfg, top=50):  # T3 + T7
-    cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.REJECTED])
+    cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.REJECTED, Tag.EVAL])
     ref = _image_items(adapter, want_tags=[Tag.GOLDEN])
     label_issue_ids = {i.id.split(":")[0] for i in audit_labels(adapter, cfg)}  # AJ2/AJ6: activate label-error risk
     ranked = _review_queue(cands, ref, k=cfg.knn_k, label_issue_ids=label_issue_ids)[:top]
@@ -531,7 +533,7 @@ def relabel_dataset(adapter, cfg, mapping: dict[str, str], change_log_path=None)
 
 def new_classes(adapter, cfg, novelty_radius=0.3, cluster_distance=0.2):  # U1
     ref = _detection_items(adapter, want_tags=[Tag.GOLDEN])
-    query = _detection_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR])
+    query = _detection_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL])
     clusters = suspected_new_classes(query, ref, novelty_radius, cluster_distance)
     for c in clusters:
         n = len(c["ids"])
@@ -742,6 +744,14 @@ def dismiss(adapter, cfg, ids):  # V6 mark false alarms; excluded from future re
         adapter.apply_tags(h, [Tag.REJECTED])
     DecisionLog(cfg.decision_log_path).append("dismiss", decision=str(len(ids)), extra={"ids": list(ids)})
     log.info("dismiss: %d samples marked as false alarm", len(ids))
+    return len(ids)
+
+
+def restore_dismissed(adapter, cfg, ids):  # AL2/AL9 reverse a dismiss/harmful-remove (un-reject), audited
+    for h in ids:
+        adapter.remove_tags(h, [Tag.REJECTED])
+    DecisionLog(cfg.decision_log_path).append("undismiss", decision=str(len(ids)), extra={"ids": list(ids)})
+    log.info("restore_dismissed: un-rejected %d samples", len(ids))
     return len(ids)
 
 
