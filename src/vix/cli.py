@@ -101,7 +101,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--eval", dest="is_eval", action="store_true",
                     help="tag as held-out eval/regression set (never calibrated/routed/exported on)")
 
-    sub.add_parser("infer", help="run YOLO -> detections").add_argument("--weights", required=True)
+    si = sub.add_parser("infer", help="run YOLO -> detections (or --synthetic for an offline demo)")
+    si.add_argument("--weights", default=None)
+    si.add_argument("--synthetic", action="store_true", help="seed deterministic synthetic detections (offline demo/CI)")
     sub.add_parser("embed", help="DINOv2 embeddings + kNN index")
     sub.add_parser("calibrate", help="compute per-class percentile thresholds")
     sub.add_parser("route", help="route candidates to pass/review")
@@ -257,6 +259,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sve = sub.add_parser("verify", help="verify a received dataset vs its export manifest (U8)")
     sve.add_argument("manifest")
     sve.add_argument("data_dir")
+    sevi = sub.add_parser("eval-ingest", help="ingest a val eval (GT+pred) -> per-class AP / confusion / FP-FN (close the model loop)")
+    sevi.add_argument("results", help="JSONL or JSON array of {vix_hash, gt:[{label,bbox}], pred:[{label,bbox,conf}]}")
+    sevi.add_argument("--iou", type=float, default=0.5)
+    sem = sub.add_parser("error-mine", help="rank unlabeled candidates nearest the model's eval FP/FN errors")
+    sem.add_argument("--top", type=int, default=20)
     return p
 
 
@@ -304,10 +311,16 @@ def _main(argv: list[str] | None = None) -> int:
             print("注:既有雜湊的影像本批未重新採用其標籤(以首次為準);如需更正用 resolve --confirm --label")
 
     elif args.cmd == "infer":
-        from .detect import run_yolo
+        if args.synthetic:
+            n = pipeline.infer_synthetic(adapter, cfg)
+            print(f"seeded synthetic detections on {n} images (offline demo; NOT real inference)")
+        else:
+            if not args.weights:
+                raise ValueError("infer 需要 --weights(或用 --synthetic 做離線示範)")
+            from .detect import run_yolo
 
-        n = run_yolo(adapter, cfg, args.weights)
-        print(f"inferred {n} images")
+            n = run_yolo(adapter, cfg, args.weights)
+            print(f"inferred {n} images")
 
     elif args.cmd == "embed":
         adapter.compute_embeddings(cfg.dinov2_model_key)
@@ -663,6 +676,25 @@ def _main(argv: list[str] | None = None) -> int:
               f"mismatched={res['mismatched']} missing={res['missing']} "
               f"unexpected={res.get('unexpected', [])}")
         return 0 if res["ok"] else 2
+
+    elif args.cmd == "eval-ingest":
+        r = pipeline.eval_ingest(adapter, cfg, args.results, iou_thr=args.iou)
+        print(f"mAP@{r['iou_thr']}={r['mAP']}")
+        for c, ap in sorted(r["per_class_ap"].items(), key=lambda kv: kv[1]):
+            print(f"  AP {c}: {ap}")
+        if r["confusion"]:
+            print("混淆 (truth->pred):")
+            for pair, n in list(r["confusion"].items())[:10]:
+                print(f"  {pair}: {n}")
+        print(f"{len(r['fn_hashes'])} 張漏報(FN)、{len(r['fp_hashes'])} 張誤報(FP);"
+              "用 vix error-mine 反查最該標的候選")
+
+    elif args.cmd == "error-mine":
+        ranked = pipeline.error_mine(adapter, cfg, top=args.top)
+        for r in ranked:
+            print(f"{r['id']}  closeness={r['closeness']}  {r['why']}")
+        if not ranked:
+            print("無候選(需先 eval-ingest,且未標註候選需有 embedding)")
 
     return 0
 

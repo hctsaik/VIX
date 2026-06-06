@@ -12,7 +12,11 @@ VIX 是一個封閉的 embedding 世界 —— `route`/`gate`/`coverage`/`label-
 
 ---
 
-## 第一優先(三位一致的 keystone)
+## 第一優先(三位一致的 keystone)— ✅ 已實作(v0.1)
+
+> `vix eval-ingest <results.json>` 回灌驗證集(GT+pred,IoU 配對)→ per-class AP / mAP / 混淆矩陣 / 逐張 FP-FN,
+> 寫入 `eval_results.json` 並把 `eval_fp`/`eval_fn` 掛回樣本;`vix error-mine` 把 FP/FN 投影回 embedding,
+> 排序「最接近模型實際失敗處」的未標註候選。核心在 [`src/vix/core/eval_ingest.py`](../../src/vix/core/eval_ingest.py),純函式、有單元測試。
 
 ### ★ #1 驗證結果回灌 + 失敗案例反查 `vix eval-ingest` / `vix error-mine`
 匯入一次驗證集評估(GT + 預測,IoU 配對)→ 算出 **per-class AP、混淆矩陣、逐張 FP/FN(含框)**,

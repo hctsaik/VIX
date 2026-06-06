@@ -106,6 +106,31 @@ def ingest(
     return n_new, n_skipped
 
 
+def infer_synthetic(adapter, cfg):  # offline demo/CI: seed deterministic synthetic detections + embeddings
+    """No-YOLO fallback so `--adapter memory` dry-runs / CI produce a non-empty pipeline.
+    Label = source parent-folder name (common demo layout); one full-image box per sample.
+    Clearly NOT real inference — use a real YOLO weight via `vix infer --weights` for judgments."""
+    import hashlib
+
+    from .embedding.simple import pixel_embedding
+    from .types import BBox, Detection
+
+    n = 0
+    for h, src, _dets, _tags in list(adapter.samples()):
+        label = Path(src).parent.name or "obj"
+        try:
+            emb = np.asarray(pixel_embedding(src, size=8), dtype=float)
+        except Exception:  # noqa: BLE001
+            emb = np.zeros(192, dtype=float)
+        seed = int(hashlib.sha256(h.encode()).hexdigest()[:8], 16) % 1000
+        conf = round(0.4 + 0.6 * seed / 1000.0, 3)  # deterministic pseudo-confidence
+        adapter.set_detections(h, [Detection(label, conf, BBox(0.5, 0.5, 1.0, 1.0), embedding=emb)])
+        n += 1
+    cfg.embedding_backend = "pixel_fallback"
+    log.info("infer_synthetic: seeded %d images (offline demo, NOT real inference)", n)
+    return n
+
+
 def calibrate(adapter: DatasetAdapter, cfg: Config) -> ThresholdPolicy:
     per_conf: dict[str, list] = defaultdict(list)
     for _h, _src, dets, tags in adapter.samples():
@@ -286,6 +311,20 @@ def _parse_meta(tags) -> tuple[str, str]:
     return batch, split
 
 
+def _resolve_tag(adapter, tag):
+    """Accept a bare batch id: resolve 'w23' -> 'batch:w23' if that's what samples carry;
+    warn if a tag matches nothing (instead of silently comparing 0 samples)."""
+    have: set[str] = set()
+    for _h, _s, _d, tags in adapter.samples():
+        have.update(tags)
+    if tag in have:
+        return tag
+    if f"batch:{tag}" in have:
+        return f"batch:{tag}"
+    log.warning("tag '%s' 未匹配任何樣本(也無 batch:%s);請確認標籤名稱", tag, tag)
+    return tag
+
+
 def _detection_items(adapter, want_tags=None, exclude_tags=None) -> list[EmbItem]:
     items: list[EmbItem] = []
     for h, _src, dets, tags in adapter.samples():
@@ -372,6 +411,7 @@ def active_learn(adapter, cfg, budget):  # S6
 
 
 def drift_periods(adapter, cfg, tag_a, tag_b, top=3):  # S7 (cross-time)
+    tag_a, tag_b = _resolve_tag(adapter, tag_a), _resolve_tag(adapter, tag_b)
     a = _detection_items(adapter, want_tags=[tag_a])
     b = _detection_items(adapter, want_tags=[tag_b])
     result = cross_period_drift(a, b, cfg.drift_shift_threshold, top)
@@ -670,6 +710,66 @@ def verify_dataset(cfg, manifest_path, data_dir):  # U8
     return res
 
 
+# --- keystone: close the data <-> model loop (eval ingestion + error mining) ---
+
+def eval_ingest(adapter, cfg, results_path, iou_thr=0.5):
+    """Ingest a held-out val evaluation (GT + predictions) -> per-class AP, confusion,
+    and per-image FP/FN; attach eval_fp/eval_fn fields and store eval_results.json.
+    Turns VIX from model-blind (confidence+embedding proxies) into model-validated."""
+    from .core.eval_ingest import evaluate
+
+    raw = Path(results_path).read_text(encoding="utf-8-sig").strip()
+    images = json.loads(raw) if raw.startswith("[") else [
+        json.loads(line) for line in raw.splitlines() if line.strip()
+    ]
+    res = evaluate(images, iou_thr=iou_thr)
+    for h, pi in res["per_image"].items():  # so review-queue / the App can sort by model failure
+        try:
+            adapter.attach_fields(h, {"eval_fp": pi["n_fp"], "eval_fn": pi["n_fn"]})
+        except Exception:  # noqa: BLE001 - eval may reference hashes not in this adapter view
+            pass
+    (cfg.workspace / "eval_results.json").write_text(
+        json.dumps({k: v for k, v in res.items() if k != "per_image"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    DecisionLog(cfg.decision_log_path).append(
+        "eval_ingest", decision=str(res["mAP"]),
+        extra={"mAP": res["mAP"], "per_class_ap": res["per_class_ap"], "n_fn_images": len(res["fn_hashes"])},
+    )
+    log.info("eval_ingest: mAP=%.3f, %d classes, %d FN / %d FP images",
+             res["mAP"], len(res["per_class_ap"]), len(res["fn_hashes"]), len(res["fp_hashes"]))
+    return res
+
+
+def error_mine(adapter, cfg, top=20):
+    """Rank unlabeled candidates by closeness to the model's val FP/FN error regions,
+    so labeling effort lands on the model's *demonstrated* failures (not just novelty)."""
+    p = cfg.workspace / "eval_results.json"
+    if not p.exists():
+        raise ValueError("尚無評估結果;請先執行 vix eval-ingest <results.json>")
+    ev = json.loads(p.read_text(encoding="utf-8"))
+    error_hashes = set(ev.get("fn_hashes", [])) | set(ev.get("fp_hashes", []))
+    samples = {h: dets for h, _s, dets, _t in adapter.samples()}
+    err_emb = []
+    for h in error_hashes:
+        embs = [np.asarray(d.embedding, float) for d in (samples.get(h) or []) if d.embedding is not None]
+        if embs:
+            err_emb.append(np.mean(np.vstack(embs), axis=0))
+    if not err_emb:
+        return []
+    E = _l2norm(np.vstack(err_emb))
+    cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL, Tag.REJECTED])
+    ranked = []
+    for it in cands:
+        v = _l2norm(np.asarray(it.embedding, float)[None, :])[0]
+        sim = float((E @ v).max())  # cosine to the nearest error region
+        ranked.append({"id": it.id, "closeness": round(sim, 4),
+                       "why": f"接近模型驗證集誤差區(cos {sim:.3f});標此張最可能補到模型實際失敗處"})
+    ranked.sort(key=lambda r: -r["closeness"])
+    log.info("error_mine: %d candidates ranked vs %d error regions", len(cands), len(err_emb))
+    return ranked[:top]
+
+
 # --- round-4 additions (V1–V10) ------------------------------------------
 
 def run_pipeline(adapter, cfg, input_folder=None, batch_id="run", weights=None,
@@ -911,6 +1011,8 @@ def resolve_batch(adapter, cfg, decisions, reviewer_id="reviewer"):
 
 
 def geometry_check(adapter, cfg, tag_a, tag_b, threshold=0.2):  # W3/W4 bbox geometry drift
+    tag_a, tag_b = _resolve_tag(adapter, tag_a), _resolve_tag(adapter, tag_b)
+
     def dets_for(tag):
         out = []
         for _h, _s, dets, tags in adapter.samples():
@@ -1014,6 +1116,7 @@ def compare(adapter, cfg, tag_a, tag_b, k=None, max_distance=0.05):  # AC4: side
     """One-shot side-by-side comparison of two tagged subsets (e.g. two annotation
     vendors): per-subset label-noise %, near-duplicate filler, plus cross-subset
     'recycling' (images in B that are near-duplicates of an image in A)."""
+    tag_a, tag_b = _resolve_tag(adapter, tag_a), _resolve_tag(adapter, tag_b)
     out: dict = {"tags": [tag_a, tag_b], "per_tag": {}, "cross_recycled": 0}
     embs: dict[str, np.ndarray] = {}
     for tag in (tag_a, tag_b):
@@ -1046,6 +1149,7 @@ def compare(adapter, cfg, tag_a, tag_b, k=None, max_distance=0.05):  # AC4: side
 
 
 def drift_type(adapter, cfg, tag_a, tag_b):  # concept #3
+    tag_a, tag_b = _resolve_tag(adapter, tag_a), _resolve_tag(adapter, tag_b)
     a = _detection_items(adapter, want_tags=[tag_a])
     b = _detection_items(adapter, want_tags=[tag_b])
     ref_emb = np.vstack([x.embedding for x in a]) if a else np.zeros((0, 1))
