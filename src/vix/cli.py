@@ -257,6 +257,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sbg = sub.add_parser("batch-gate", help="can THIS batch be admitted? batch-scoped hygiene + leakage-safety verdict (BLOCK/CLEAN/PASS/PARTIAL) — NOT a mAP-gain promise")
     sbg.add_argument("batch", help="batch id (e.g. w23)")
     sbg.add_argument("--max-distance", type=float, default=0.05, help="near-duplicate cosine-distance threshold")
+    sba2 = sub.add_parser("batch-admit", help="formally admit a gated batch into the training pool (defensible + reversible + queryable record); a BLOCK verdict refuses unless --force")
+    sba2.add_argument("batch", help="batch id (e.g. w23)")
+    sba2.add_argument("--force", action="store_true", help="admit despite a BLOCK verdict (the override is logged)")
+    sbu = sub.add_parser("batch-unadmit", help="reverse a batch admission (remove the admitted tag; logged)")
+    sbu.add_argument("batch", help="batch id (e.g. w23)")
+    sub.add_parser("batch-ledger", help="which batches are admitted into the training pool + the admit/un-admit history (from the audit chain)")
     sex = sub.add_parser("explain", help="drill-down why one image was flagged (U9)")
     sex.add_argument("hash")
     sve = sub.add_parser("verify", help="verify a received dataset vs its export manifest (U8)")
@@ -709,6 +715,26 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"  洩漏(BLOCK)樣本: {r['block']['eval_leakage'][:10]}")
         print("  註:這是『資料衛生 + 洩漏安全』判定,非『進訓練會漲 mAP』的保證(VIX 不重訓)")
         return 0 if r["verdict"] in ("PASS", "CLEAN") else 2
+
+    elif args.cmd == "batch-admit":
+        r = pipeline.batch_admit(adapter, cfg, args.batch, force=args.force)
+        if not r["admitted"]:
+            print(f"batch-admit {r['batch']}: 拒絕(gate {r['verdict']})- {r['reasons']}")
+            print("  需 --force 才能覆蓋 BLOCK(覆蓋會記入 hash 鏈)")
+            return 2
+        print(f"batch-admit {r['batch']}: {'FORCED' if r.get('forced') else r['verdict']} - 已准入 {r['n_admitted']} 筆")
+        print(f"  訓練池 content_hash: {r['pre_hash'][:12]} → {r['post_hash'][:12]}(已記入 hash 鏈)")
+        print("  註:衛生把關的准入紀錄,非『會漲 mAP』;可 vix batch-unadmit 回退")
+
+    elif args.cmd == "batch-unadmit":
+        r = pipeline.batch_unadmit(adapter, cfg, args.batch)
+        print(f"batch-unadmit {r['batch']}: 回退 {r['unadmitted']} 筆;訓練池 {r['pre_hash'][:12]} → {r['post_hash'][:12]}")
+
+    elif args.cmd == "batch-ledger":
+        r = pipeline.batch_ledger(cfg)
+        print(f"目前已准入訓練池的批次: {r['admitted_batches'] or '(無)'}")
+        for h in r["history"]:
+            print(f"  {h['ts']}  {h['event']:14s} {h['batch']:8s} {h['decision']}")
 
     elif args.cmd == "gate":
         r = pipeline.pre_train_gate_stage(adapter, cfg)

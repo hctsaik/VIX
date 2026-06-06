@@ -790,6 +790,99 @@ def batch_gate(adapter, cfg, batch, max_distance=0.05):
             "block": block, "clean": clean, "eval_available": eval_available}
 
 
+def _training_pool_hash(adapter, cfg):
+    """Content hash over the training pool (golden ∪ admitted) + thresholds meta — the checkpoint
+    anchor for batch-admit (changes when a batch is admitted/un-admitted)."""
+    from .core.snapshot import _content_hash
+    pool = sorted(h for h, _s, _d, t in adapter.samples() if Tag.GOLDEN in t or Tag.ADMITTED in t)
+    thr_meta = ThresholdPolicy.load(cfg.thresholds_path).meta if cfg.thresholds_path.exists() else {}
+    return _content_hash(pool, thr_meta)
+
+
+def batch_admit(adapter, cfg, batch, force=False):
+    """Formally admit a gated batch into the training pool — the governance keystone that makes the
+    weekly decision DEFENSIBLE (why is w23 in training?), REVERSIBLE (batch-unadmit), and QUERYABLE
+    (batch-ledger). Runs batch-gate first; a BLOCK verdict REFUSES admission unless force=True (the
+    override is itself logged). Tags the batch `admitted`, records a hash-chained batch_admit event
+    binding {verdict, pre/post training-pool content_hash, eval_set_hash, backend} to the batch.
+    Hygiene-gated admission — NOT a claim the batch raises mAP."""
+    gate = batch_gate(adapter, cfg, batch)
+    btag = f"batch:{batch}"
+    batch_hashes = sorted(h for h, _s, _d, t in adapter.samples() if btag in t)
+    refused = gate["verdict"] == "BLOCK" and not force
+    if refused:
+        DecisionLog(cfg.decision_log_path).append(
+            "batch_admit", batch_id=str(batch), decision="REFUSED",
+            extra={"verdict": gate["verdict"], "reasons": gate["reasons"],
+                   "block": {k: len(v) for k, v in gate["block"].items()},
+                   "note": "admission refused: batch-gate BLOCK (use --force to override, logged)"})
+        log.warning("batch_admit %s: REFUSED (gate BLOCK: %s)", batch, gate["reasons"])
+        return {"admitted": False, "batch": batch, "verdict": gate["verdict"], "reasons": gate["reasons"]}
+
+    pre_hash = _training_pool_hash(adapter, cfg)
+    for h in batch_hashes:
+        adapter.apply_tags(h, [Tag.ADMITTED])
+    post_hash = _training_pool_hash(adapter, cfg)
+    eval_set_hash = None
+    if cfg.eval_results_path.exists():
+        try:
+            eval_set_hash = json.loads(cfg.eval_results_path.read_text(encoding="utf-8")).get("eval_set_hash")
+        except (ValueError, OSError):
+            pass
+    forced = gate["verdict"] == "BLOCK" and force
+    DecisionLog(cfg.decision_log_path).append(
+        "batch_admit", batch_id=str(batch), decision=("FORCED" if forced else gate["verdict"]),
+        extra={"verdict": gate["verdict"], "forced": forced, "n_admitted": len(batch_hashes),
+               "pre_hash": pre_hash, "post_hash": post_hash, "eval_set_hash": eval_set_hash,
+               "backend": cfg.embedding_backend, "block": {k: len(v) for k, v in gate["block"].items()},
+               "note": "hygiene-gated admission record; reversible via batch-unadmit; NOT a mAP-gain claim"})
+    log.info("batch_admit %s: %s (%d admitted, pool %s->%s)", batch,
+             "FORCED" if forced else gate["verdict"], len(batch_hashes), pre_hash[:8], post_hash[:8])
+    return {"admitted": True, "batch": batch, "verdict": gate["verdict"], "forced": forced,
+            "n_admitted": len(batch_hashes), "pre_hash": pre_hash, "post_hash": post_hash}
+
+
+def batch_unadmit(adapter, cfg, batch):
+    """Reverse a batch admission: remove the `admitted` tag from the batch's samples and record a
+    hash-chained batch_unadmit event (the training-pool hash reverts). The reversible half of the
+    governance loop."""
+    btag = f"batch:{batch}"
+    admitted = [h for h, _s, _d, t in adapter.samples() if btag in t and Tag.ADMITTED in t]
+    if not admitted:
+        raise ValueError(f"batch '{batch}' 未被 admit(無 {Tag.ADMITTED} tag),無可回退")
+    pre_hash = _training_pool_hash(adapter, cfg)
+    try:
+        for h in admitted:
+            adapter.remove_tags(h, [Tag.ADMITTED])
+    except NotImplementedError:
+        raise ValueError("此 adapter 不支援移除 tag,無法 un-admit") from None
+    post_hash = _training_pool_hash(adapter, cfg)
+    DecisionLog(cfg.decision_log_path).append(
+        "batch_unadmit", batch_id=str(batch), decision="UNADMITTED",
+        extra={"n_unadmitted": len(admitted), "pre_hash": pre_hash, "post_hash": post_hash})
+    log.info("batch_unadmit %s: %d un-admitted (pool %s->%s)", batch, len(admitted), pre_hash[:8], post_hash[:8])
+    return {"unadmitted": len(admitted), "batch": batch, "pre_hash": pre_hash, "post_hash": post_hash}
+
+
+def batch_ledger(cfg):
+    """Which batches are currently admitted into the training pool, and the full admit/un-admit
+    history — reconstructed from the hash-chained decision log ('why is w23 in the training set?')."""
+    state: dict[str, str] = {}
+    history = []
+    for r in DecisionLog(cfg.decision_log_path).read_all():
+        ev = r.get("event")
+        if ev not in ("batch_admit", "batch_unadmit"):
+            continue
+        b = r.get("batch_id")
+        history.append({"batch": b, "event": ev, "ts": r.get("ts_utc"),
+                        "decision": r.get("decision"), "extra": r.get("extra", {})})
+        if ev == "batch_admit" and r.get("decision") != "REFUSED":
+            state[b] = "admitted"
+        elif ev == "batch_unadmit":
+            state[b] = "unadmitted"
+    return {"admitted_batches": sorted(b for b, s in state.items() if s == "admitted"), "history": history}
+
+
 def explain_one(adapter, cfg, vix_hash):  # U9
     policy = ThresholdPolicy.load(cfg.thresholds_path) if cfg.thresholds_path.exists() else None
     scorer = OutlierScorer(_emb_by_class(adapter, {Tag.GOLDEN}), k=cfg.knn_k)

@@ -83,3 +83,56 @@ def test_batch_gate_unknown_batch_raises(tmp_path):
     import pytest
     with pytest.raises(ValueError, match="找不到 batch"):
         pipeline.batch_gate(InMemoryAdapter(), _cfg(tmp_path), "nope")
+
+
+# --- batch-admit / un-admit / ledger (governance keystone: defensible + reversible + queryable) ---
+
+def _clean_batch(tmp_path):
+    cfg = _cfg(tmp_path)
+    ad = InMemoryAdapter()
+    ad.seed("g0", "g.png", [_det("a", [1, 0])], tags=[Tag.GOLDEN])
+    ad.seed("b0", "b.png", [_det("a", [0, 1])], tags=["batch:w23"])   # far from golden, distinct -> PASS
+    ad.seed("b1", "b.png", [_det("a", [1, 1])], tags=["batch:w23"])   # not a within-batch dup of b0
+    return cfg, ad
+
+
+def test_admit_clean_batch_records_and_changes_pool_hash(tmp_path):
+    cfg, ad = _clean_batch(tmp_path)
+    r = pipeline.batch_admit(ad, cfg, "w23")
+    assert r["admitted"] and r["verdict"] == "PASS" and r["n_admitted"] == 2
+    assert r["pre_hash"] != r["post_hash"]                              # admitting changed the training pool
+    tags = next(t for h, _s, _d, t in ad.samples() if h == "b0")
+    assert Tag.ADMITTED in tags
+    led = pipeline.batch_ledger(cfg)
+    assert led["admitted_batches"] == ["w23"]
+
+
+def test_admit_refused_on_block_unless_forced(tmp_path):
+    cfg = _cfg(tmp_path)
+    ad = InMemoryAdapter()
+    ad.seed("g0", "g.png", [_det("a", [1, 0])], tags=[Tag.GOLDEN])
+    ad.seed("b_leak", "b.png", [_det("a", [1, 0])], tags=["batch:w23"])  # near-dup of golden -> BLOCK
+    r = pipeline.batch_admit(ad, cfg, "w23")
+    assert not r["admitted"] and r["verdict"] == "BLOCK"
+    assert Tag.ADMITTED not in next(t for h, _s, _d, t in ad.samples() if h == "b_leak")
+    rf = pipeline.batch_admit(ad, cfg, "w23", force=True)               # override is allowed + logged
+    assert rf["admitted"] and rf["forced"]
+    hist = pipeline.batch_ledger(cfg)["history"]
+    assert any(h["decision"] == "REFUSED" for h in hist) and any(h["decision"] == "FORCED" for h in hist)
+
+
+def test_unadmit_reverses_and_is_logged(tmp_path):
+    cfg, ad = _clean_batch(tmp_path)
+    admit = pipeline.batch_admit(ad, cfg, "w23")
+    r = pipeline.batch_unadmit(ad, cfg, "w23")
+    assert r["unadmitted"] == 2
+    assert all(Tag.ADMITTED not in t for h, _s, _d, t in ad.samples() if "batch:w23" in t)
+    assert r["post_hash"] == admit["pre_hash"]                          # pool reverted to pre-admit state
+    assert pipeline.batch_ledger(cfg)["admitted_batches"] == []          # no longer admitted
+
+
+def test_unadmit_without_admit_raises(tmp_path):
+    cfg, ad = _clean_batch(tmp_path)
+    import pytest
+    with pytest.raises(ValueError, match="未被 admit"):
+        pipeline.batch_unadmit(ad, cfg, "w23")

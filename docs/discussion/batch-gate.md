@@ -20,5 +20,5 @@
 檔案:`core/gate.batch_gate_verdict`、`pipeline.batch_gate`、CLI;測試 `tests/test_batch_gate.py`(8:純判定 + 洩漏/退化 BLOCK + 無凍結 PARTIAL + 乾淨 PASS + 審計 + 未知批次報錯)。全套 222 綠。
 
 ## 放大價值的下一步(amplify)
-1. **`batch_admit` hash 鏈帳本事件**(治理基石,刻意延後到 v1 被採用後):admit 動作時寫一筆綁 {verdict, 各檢查, **admit 前/後 snapshot content_hash**, eval_set_hash, backend} 到 `batch:w23` → 使准入**可辯護 + 可逆**(un-admit = restore admit 前 snapshot)+ **可查詢**(「哪些批次在訓練集、為何」)。~90% 靠既有 `DecisionLog.batch_id`/`snapshot.content_hash`/`restore_apply`。**先讓 verdict 被信任、被每週用,再給它帳本**(沒被採用的 verdict 配帳本是 audit theater)。
+1. **`batch_admit` 治理帳本** — ✅ **已實作**:`vix batch-admit w23` 先跑 batch-gate,**BLOCK 拒絕准入**(除非 `--force`,覆蓋本身入帳),把批次打 `admitted` tag,並寫一筆 hash 鏈 `batch_admit` 事件綁 {verdict, **訓練池(golden∪admitted)前/後 content_hash**, eval_set_hash, backend}。`vix batch-unadmit w23` 移除 tag、訓練池雜湊回退、記 `batch_unadmit`。`vix batch-ledger` 從鏈上重建「哪些批次已准入訓練集、何時、什麼 verdict」。→ 准入**可辯護 + 可逆 + 可查**,且 reuse `snapshot._content_hash` + `DecisionLog`。`pipeline.batch_admit/batch_unadmit/batch_ledger`、`Tag.ADMITTED`;測試 `tests/test_batch_gate.py`(+4)。
 2. App 內一眼呈現 batch-gate verdict;3. 跨週 batch 品質趨勢(在 verdict 被信任後)。
