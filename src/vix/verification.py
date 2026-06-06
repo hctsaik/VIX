@@ -142,12 +142,16 @@ def run_gui(cfg: Config, execute: bool = True) -> int:
 
     ds = _build_dataset(fo)
     rev = ds.match({"vix_hash": "rev1"}).first()
+    panel_ok = False
     try:
+        import fiftyone.operators.registry as _reg
         import fiftyone.plugins as fop
 
         print("plugins discovered:", [p.name for p in fop.list_plugins()] or "(none)")
+        panel_ok = _reg.operator_exists("@vix/review/vix_report")  # the report Panel registers in a live runtime
+        print(f"  [{'PASS' if panel_ok else 'FAIL'}] vix_report 面板已在 FiftyOne runtime 註冊")
     except Exception as exc:  # noqa: BLE001
-        print("plugins listing skipped:", exc)
+        print("plugins/panel listing skipped:", exc)
 
     session = fo.launch_app(ds, remote=True, port=PORT)
     ok = True
@@ -194,6 +198,7 @@ def run_gui(cfg: Config, execute: bool = True) -> int:
             time.sleep(1)
         ok = "golden" in tags
         print(f"[{'PASS' if ok else 'FAIL'}] GUI 執行 confirm_golden -> rev1 tags={tags}")
+    ok = ok and panel_ok  # the vix_report Panel must also be registered in the live App
     fo.delete_dataset(DATASET)
-    print(f"=== {'GUI 驗證 PASS' if ok else 'GUI 驗證 FAIL'} (截圖在 {shots}) ===")
+    print(f"=== {'GUI 驗證 PASS' if ok else 'GUI 驗證 FAIL'} (截圖在 {shots};vix_report 面板={'OK' if panel_ok else 'MISSING'}) ===")
     return 0 if ok else 1

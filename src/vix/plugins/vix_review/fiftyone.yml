@@ -7,3 +7,5 @@ operators:
   - confirm_golden
   - dismiss_false_alarm
   - explain_sample
+panels:
+  - vix_report

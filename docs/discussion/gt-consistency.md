@@ -43,4 +43,5 @@
 - ✅ **批次範圍**:`weakness-report/error-mine/hardneg --batch w23` 把「該標/該清什麼」的佇列 + 翻盤**只看這批**(GT 模型弱點維持全域,因為那是模型本質、與批次無關)。答週用問題「**這一批**要清什麼」。
 - ✅ **趨勢(以 audit log 為準,非 snapshot 膨脹)**:`vix ap-trend` 從 hash 鏈日誌讀 `eval_ingest`(mAP/per-class AP/`eval_set_hash`)+ `weakness_report`(health)→ 逐類 AP 軌跡 + Δ + 健康度軌跡;**eval set 變過會標記「不可直接比較」**(避免「val 變簡單」假漲)。答「過去幾輪策展有沒有讓 bubble 變好」,離線可查、可稽核。`core/trend.py`。
 - 關於 offline 價值的取捨:**hit-rate 回授「重排」佇列暫不做** —— 對小型/離線/演進中的資料,跨輪累積慢 + 非平穩 + 回授放大噪音,邊際小於風險;測量+顯示(已做)才是 offline 的真價值。
-- 仍待:完整 FiftyOne **App 面板**(把報告表格嵌進 App);snapshot 綁 content_hash↔mAP(嚴格 release registry)。
+- ✅ **FiftyOne App 面板**:`@vix/review` plugin 新增 `VixReportPanel`(`vix app` → 開「VIX: 弱點/一致性報告」面板),把 weakness/consistency 報告以 markdown 呈現在 App 內,附「重新整理」「標記工作清單」按鈕(後者打 vixq:* → saved views 可點)。FiftyOne 1.16 Panel API;離線驗證面板註冊(`operator_exists` True),瀏覽器渲染由 `vix verify-gui` 在 live App 驗。
+- 仍待:snapshot 綁 content_hash↔mAP(嚴格 release registry)。

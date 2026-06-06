@@ -21,5 +21,5 @@
 
 ## 放大價值的下一步(amplify)
 1. **`batch_admit` 治理帳本** — ✅ **已實作**:`vix batch-admit w23` 先跑 batch-gate,**BLOCK 拒絕准入**(除非 `--force`,覆蓋本身入帳),把批次打 `admitted` tag,並寫一筆 hash 鏈 `batch_admit` 事件綁 {verdict, **訓練池(golden∪admitted)前/後 content_hash**, eval_set_hash, backend}。`vix batch-unadmit w23` 移除 tag、訓練池雜湊回退、記 `batch_unadmit`。`vix batch-ledger` 從鏈上重建「哪些批次已准入訓練集、何時、什麼 verdict」。→ 准入**可辯護 + 可逆 + 可查**,且 reuse `snapshot._content_hash` + `DecisionLog`。`pipeline.batch_admit/batch_unadmit/batch_ledger`、`Tag.ADMITTED`;測試 `tests/test_batch_gate.py`(+4)。
-2. **App 內呈現** — ✅ **可點工作清單(已實作)**:`vix batch-gate w23 --worklist` 把問題樣本打 `vixq:batch:{leakage,degenerate,label_noise,confident_wrong}` tag → `vix app` 用既有 saved-views 機制(`worklist_views`)變成可點清單,直接跳進那批的問題樣本。*完整自訂 FiftyOne Panel(把報告表格嵌進 App)需 live FiftyOne + Playwright,屬最後一塊。*
+2. **App 內呈現** — ✅ **完成**:(a) 可點工作清單 `vix batch-gate w23 --worklist` → `vixq:batch:*` tag → `vix app` saved views;(b) **完整 FiftyOne Panel** `VixReportPanel`(`@vix/review` plugin)把報告呈現在 App 內 + 重新整理/標記工作清單按鈕。離線驗證面板註冊 + render schema(FiftyOne 1.16);瀏覽器渲染由 `vix verify-gui` 驗。
 3. **跨週 batch 趨勢** — ✅ **已實作**:`vix batch-trend` 從 hash 鏈讀各批 gate verdict + 准入狀態 + 洩漏趨勢 → 「批次品質有沒有逐週變差」。`core/trend.batch_trend`。

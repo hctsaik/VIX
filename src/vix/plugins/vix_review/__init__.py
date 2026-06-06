@@ -87,7 +87,49 @@ class ExplainSample(foo.Operator):
         return types.Property(outputs)
 
 
+def _report_md(ctx, regenerate=False):
+    """Render the weakness report (per-class AP + consistency + hit-rate + TL;DR) as markdown for the
+    panel. Reuses pipeline.weakness_report (the same tested artifact the CLI writes)."""
+    cfg, ad = Config(), _adapter(ctx)
+    md_path = cfg.workspace / "weakness_report.md"
+    if regenerate or not md_path.exists():
+        try:
+            pipeline.weakness_report(ad, cfg)
+        except Exception as exc:  # noqa: BLE001 - surface the reason in-panel rather than crash the App
+            return f"# VIX 弱點報告\n\n產生失敗:`{exc}`\n\n需先有 golden,並(選用)`vix eval-ingest <val.jsonl>`。"
+    return md_path.read_text(encoding="utf-8") if md_path.exists() else "# VIX 弱點報告\n\n(尚無報告)"
+
+
+class VixReportPanel(foo.Panel):
+    """In-App panel surfacing the VIX weakness/consistency report (Tier 2 GUI). Pure presentation over
+    pipeline.weakness_report — same audit-logged core the CLI uses."""
+
+    @property
+    def config(self):
+        return foo.PanelConfig(name="vix_report", label="VIX: 弱點/一致性報告", surfaces="grid")
+
+    def on_load(self, ctx):
+        ctx.panel.state.md = _report_md(ctx)
+
+    def on_regen(self, ctx):
+        ctx.panel.state.md = _report_md(ctx, regenerate=True)
+
+    def on_worklist(self, ctx):
+        cfg, ad = Config(), _adapter(ctx)
+        pipeline.weakness_report(ad, cfg, worklist=True)  # tag vixq:* so saved views become clickable
+        ctx.panel.state.md = _report_md(ctx)
+        ctx.ops.reload_dataset()
+
+    def render(self, ctx):
+        panel = types.Object()
+        panel.md(ctx.panel.state.md or "_載入中…_", name="report")
+        panel.btn("regen", label="產生 / 重新整理報告", on_click=self.on_regen)
+        panel.btn("worklist", label="標記工作清單(供 saved views 點選)", on_click=self.on_worklist)
+        return types.Property(panel, view=types.GridView(height=100, width=100))
+
+
 def register(p):
     p.register(ConfirmGolden)
     p.register(DismissFalseAlarm)
     p.register(ExplainSample)
+    p.register(VixReportPanel)
