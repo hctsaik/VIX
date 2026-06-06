@@ -924,10 +924,10 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     a proxy-stamped audit entry. Every 'go label these' ranking is a PROXY (no retraining)."""
     from collections import Counter
 
-    from .core.weakness_report import render_weakness_report
+    from .core.weakness_report import render_weakness_report, render_weakness_report_html
 
     data = {"mode": "gt_free", "mAP": None, "loc_gap": None, "per_class": [],
-            "confusion": [], "confident_wrong": [], "overturns": [], "queue": {}}
+            "confusion": [], "confident_wrong": [], "overturns": [], "queue": {}, "consistency": []}
     ev = None
     if cfg.eval_results_path.exists():
         ev = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
@@ -969,14 +969,43 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     except (ValueError, OSError):
         pass
 
+    from .core.consistency import consistency_findings  # GT x embedding attribution (taxonomy/model/label)
+    data["consistency"] = consistency_findings(
+        _emb_by_class(adapter, {Tag.GOLDEN}),
+        (ev.get("confusion") if ev else None), (ev.get("n_gt") if ev else None))
+
     out = Path(out_path or (cfg.workspace / "weakness_report.md"))
     out.write_text(render_weakness_report(data), encoding="utf-8")
+    html_out = out.with_suffix(".html")  # browsable surface (Playwright-verifiable)
+    html_out.write_text(render_weakness_report_html(data), encoding="utf-8")
     DecisionLog(cfg.decision_log_path).append(
         "weakness_report", decision=data["mode"],
         extra={"mAP": data["mAP"], "weak_classes": [r["cls"] for r in data["per_class"][:top_classes]],
+               "consistency": [f["verdict"] for f in data["consistency"]][:10],
                "note": "proxy: no retraining; rankings are suspicion/priority, not measured mAP gain"})
-    log.info("weakness_report: mode=%s -> %s", data["mode"], out)
-    return {"path": str(out), "data": data}
+    log.info("weakness_report: mode=%s -> %s (+%s)", data["mode"], out, html_out.name)
+    return {"path": str(out), "html": str(html_out), "data": data}
+
+
+def consistency(adapter, cfg, max_pairs=20):
+    """GT-powered consistency attribution: per class-pair separability (LOO-kNN in DINOv2 space) +
+    confusion×embedding-overlap 2×2 verdict (taxonomy / model / label_noise), over the human-confirmed
+    GOLDEN embeddings joined with the eval confusion matrix if present. Advisory, support-gated with
+    CIs; separability is encoder-hedged ('in the current embedding space'). Offline; no training."""
+    from .core.consistency import consistency_findings
+    emb_by_class = _emb_by_class(adapter, {Tag.GOLDEN})
+    confusion = n_gt = None
+    if cfg.eval_results_path.exists():
+        ev = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
+        confusion, n_gt = ev.get("confusion", {}), ev.get("n_gt", {})
+    findings = consistency_findings(emb_by_class, confusion, n_gt, max_pairs=max_pairs)
+    DecisionLog(cfg.decision_log_path).append(
+        "consistency", decision=str(len(findings)),
+        extra={"n_classes": len(emb_by_class), "has_eval": confusion is not None,
+               "verdicts": [f["verdict"] for f in findings][:10],
+               "note": "advisory; separability encoder-hedged; small GT -> insufficient_support; never auto-merge"})
+    log.info("consistency: %d classes, %d findings (has_eval=%s)", len(emb_by_class), len(findings), confusion is not None)
+    return {"findings": findings, "n_classes": len(emb_by_class), "has_eval": confusion is not None}
 
 
 def bank_audit(adapter, cfg, defect_tag=Tag.GOLDEN, reflection_tag=Tag.REJECTED, normal_tag=None,

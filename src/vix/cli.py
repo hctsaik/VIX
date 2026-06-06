@@ -273,10 +273,12 @@ def _build_parser() -> argparse.ArgumentParser:
     shn = sub.add_parser("hardneg", help="rank the detector's most confident-yet-wrong detections (GT eval-FP, or GT-free embedding overturn)")
     shn.add_argument("--top", type=int, default=50)
     shn.add_argument("--mode", choices=["auto", "gt", "gt_free"], default="auto")
-    swr = sub.add_parser("weakness-report", help="roll per-class AP + confusion + FP/FN typing + loc_gap + hardneg into a human-readable 'where YOLO is weak / go label these' report")
+    swr = sub.add_parser("weakness-report", help="roll per-class AP + confusion + FP/FN typing + loc_gap + hardneg + consistency into a human-readable report (writes .md + .html)")
     swr.add_argument("--top-classes", type=int, default=5)
     swr.add_argument("--queue-per-class", type=int, default=10)
     swr.add_argument("--out", default=None)
+    scon = sub.add_parser("consistency", help="GT x embedding attribution: per class-pair separability + confusion-overlap 2x2 (taxonomy/model/label_noise) — advisory, CI-gated")
+    scon.add_argument("--max-pairs", type=int, default=20)
     sba = sub.add_parser("bank-audit", help="multi-bank Top-K embedding audit of low-conf proposals -> defect/reflection/unknown (advisory)")
     sba.add_argument("--defect-tag", default="golden")
     sba.add_argument("--reflection-tag", default="rejected")
@@ -754,6 +756,18 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"  弱類 {row['cls']}: AP={row['ap']} 漏報型態={row.get('dom_fn_type') or '-'} "
                   f"佇列={len(d['queue'].get(row['cls'], []))} 候選")
         print("  註:未重訓 → 佇列是 PROXY 優先排序,非實測 mAP 增益")
+
+    elif args.cmd == "consistency":
+        r = pipeline.consistency(adapter, cfg, max_pairs=args.max_pairs)
+        print(f"一致性歸因({r['n_classes']} 類,has_eval={r['has_eval']},{len(r['findings'])} 個易混對):")
+        for f in r["findings"]:
+            c = f"{f['C_ij']}" if f.get("C_ij") is not None else "-"
+            print(f"  {f['pair'][0]}↔{f['pair'][1]}  [{f['verdict']}] 可分={f['separable_in_embedding']} "
+                  f"sep_err={f['sep_err']}{f.get('sep_ci')} O={f.get('O_ij')} C={c} ({f['tier']})")
+            print(f"      → {f['action']}")
+        if not r["findings"]:
+            print("  無(需 ≥2 類 golden;接 eval-ingest 才能歸因 taxonomy/model/label)")
+        print("  註:諮詢式;可分性綁定目前 embedding 空間;小樣本→insufficient_support,絕不自動 merge")
 
     elif args.cmd == "bank-audit":
         r = pipeline.bank_audit(

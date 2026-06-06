@@ -39,6 +39,11 @@ VIX 是一個封閉的 embedding 世界 —— `route`/`gate`/`coverage`/`label-
 > **`hardneg`**(YOLO 最自信卻錯:GT eval-FP / GT-free 嵌入翻盤)+ **`weakness-report`**(兩模式「哪裡弱 / 去標這些」報告 + 逐弱類 class-aware `error-mine` 佇列)。
 > 不重訓 = 代理非證明。決策見 [safe-vix-merge.md](safe-vix-merge.md),操作見 SOP §B9。
 
+> **更新(GT × 嵌入一致性歸因,已實作 + 測試,含 Playwright):** 三輪多代理結論「確實有價值 → 放大」。
+> GT 把自我參照的標籤訊號升級成**歸因**:`vix consistency` 逐類對給 separability(LOO-kNN,encoder-hedged)+ 混淆×重疊 2×2 →
+> **taxonomy / model / label_noise**(三者處置相反),整合進 weakness-report(.md + .html)。諮詢式 + CI + 支撐閘,絕不自動 merge。
+> 決策見 [gt-consistency.md](gt-consistency.md),操作見 SOP §B10。下一步放大:佇列命中率飛輪 + 領域自適應 embedding。
+
 ### #2 逐框「框品質」QA `vix box-qa` ✅ 已實作
 逐張、逐框靜態檢查:**過鬆/過大框、退化框(w或h≈0)、貼邊截斷框、長寬比超出該類包絡**。
 - **→ mAP**:**標註框緊度是 mAP@0.5:0.95 的頭號天花板**。系統性鬆 10–15% 的框會教出鬆的先驗,在嚴格 IoU(0.75–0.95)大量丟分;退化框是 NaN/loss 爆衝來源;截斷框該設 ignore。

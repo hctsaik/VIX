@@ -93,6 +93,7 @@
   <a href="#b7">B7. 模型閉環:eval-ingest / bank-audit</a>
   <a href="#b8">B8. 模型閉環 v2:錯誤分型 / box-qa / challenge-guard</a>
   <a href="#b9">B9. YOLO 弱點報告:hardneg / weakness-report</a>
+  <a href="#b10">B10. 一致性歸因:consistency(GT × 嵌入)</a>
   <h2>實戰 &amp; 附錄</h2>
   <a href="#scenario">C. 標準情境 SOP</a>
   <a href="#explore">D. 探索更多 / 排解</a>
@@ -445,6 +446,20 @@ vix set-eval-baseline --protect bubble --protect-drop 0.05 --map-drop 0.02
   <tr><td><b>逐弱類佇列</b></td><td>每個弱類:「去標這些」候選(class-aware <code>error-mine</code>,只比該類失敗處)</td><td>有 val set 撈出該類誤差框</td></tr>
 </table>
 <div class="warn"><b>誠實邊界:</b>不重訓 = <b>沒有證明,只有代理</b>。佇列是「最該標的<b>嫌疑/優先排序</b>」(靠近已證實誤差 / 自信翻盤),<b>不是</b>「標了 mAP 一定漲」。報告全程標 <code>PROXY</code>。要證明某批資料確實有效,得<b>外部重訓一次</b>再用 <code>eval-ingest</code> + <code>challenge-guard</code> 量逐類 mAP delta。<code>bank_audit</code> 已涵蓋「低信心但像 defect」的漏檢撈回(<code>HARD_POSITIVE</code>),故未另搬 SAFE 的 hardpos。</div>
+
+<!-- ============ B10 ============ -->
+<h2 class="sec" id="b10">B10. 一致性歸因:<code>consistency</code>(GT × 嵌入) <span class="tag vix">VIX 客製</span></h2>
+<p>VIX 既有的標籤訊號都是<b>自我參照</b>(只能說「和鄰居不一樣」),在「兩類重疊處」結構性失明。用人工確認的 <b>golden</b>(=GT 標籤的真實例)嵌入 + eval 混淆矩陣,把「偵測」升級成「<b>歸因</b>」:這個失敗是 taxonomy / model / label 問題?三者在 AP 上長一樣,但處置相反。決策見 <a href="../discussion/gt-consistency.md">gt-consistency.md</a>。</p>
+<pre><code>vix consistency [--max-pairs 20]        # 直接看;也自動併進 weakness-report(.md + .html)</code></pre>
+<table>
+  <tr><th>判定</th><th>意思</th><th>該做什麼(處置相反!)</th></tr>
+  <tr><td><b>taxonomy</b></td><td>embedding 不可分 <b>且</b> 模型同步混淆</td><td><b>停止多標</b>;考慮 merge 或重寫判別規則(先看例圖)</td></tr>
+  <tr><td><b>model</b></td><td>embedding 可分,但模型仍混淆</td><td>沿邊界<b>補硬負樣本/資料</b>(標註是對的槓桿)</td></tr>
+  <tr><td><b>label_noise</b></td><td>嵌入聚一起,但標籤分歧</td><td><b>重新裁決</b>這對、寫下規則(勿 merge、勿多標)</td></tr>
+  <tr><td><code>insufficient_support</code> / <code>*_watch</code></td><td>GT/golden 太少</td><td>先補樣本;<b>絕不</b>在薄證據上 merge</td></tr>
+</table>
+<p>每對附:可分性 sep_err [Wilson CI]、O[i→j]、C[i→j]、Δ 的保守 CI、支撐階梯(insufficient&lt;10 / provisional 10–20 / supported ≥20)。</p>
+<div class="warn"><b>誠實邊界:</b>諮詢式,<b>絕不自動改標/自動 merge</b>。可分性措辭一律綁「<b>在目前 embedding 空間</b>」(凍結 DINO 可能才是瓶頸,非 taxonomy 真壞);`0∈CI(Δ)` 不給方向性歸因;merge 建議需 supported。多標註者 κ 路線需 schema 變更 + 多標註資料,<b>延後</b>。放大價值的下一步:佇列命中率飛輪 + <b>領域自適應 embedding</b>(用 golden 在凍結 DINO 上學輕量投影,非訓練 YOLO)把整個 stack 抬高。</div>
 
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>

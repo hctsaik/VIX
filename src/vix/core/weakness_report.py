@@ -69,8 +69,91 @@ def render_weakness_report(data: dict) -> str:
             L.append(f"- **{c}**: " + ", ".join(f"{x['id']}({x['closeness']})" for x in cands))
         L.append("")
 
-    if not (pc or cw or ov):
-        L.append("\n_(無可用訊號:需先 `vix eval-ingest`(有標註 val set)或 `vix calibrate`(GT-free 翻盤)。)_\n")
+    cons = data.get("consistency") or []
+    if cons:
+        L.append("\n## 一致性歸因(GT × 嵌入:這個失敗是 taxonomy / model / label 問題?)\n")
+        L.append("每個易混類別對:在 embedding 空間可不可分、模型混淆多少、成因。" + _PROXY)
+        L.append("| 類別對 | 可分(embedding) | sep_err [CI] | O[i→j] | C[i→j] | 判定 | 支撐 | 建議 |")
+        L.append("|---|---|---|---|---|---|---|---|")
+        for f in cons:
+            pair = f"{f['pair'][0]}↔{f['pair'][1]}"
+            sep = f"{f['sep_err']} {f.get('sep_ci')}"
+            o = f.get("O_ij"); c = f.get("C_ij")
+            sup = f"g{f['support']['golden_i']}/{f['support']['golden_j']} ({f['tier']})"
+            L.append(f"| {pair} | {f['separable_in_embedding']} | {sep} | {o} | {c if c is not None else '-'} "
+                     f"| **{f['verdict']}** | {sup} | {f['action']} |")
+        L.append("")
+
+    if not (pc or cw or ov or cons):
+        L.append("\n_(無可用訊號:需先 `vix eval-ingest`(有標註 val set)或 `vix calibrate`(GT-free 翻盤),或建立 golden(一致性歸因)。)_\n")
 
     L.append("\n---\n> " + _PROXY.strip("_"))
     return "\n".join(L)
+
+
+def _esc(s) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def render_weakness_report_html(data: dict) -> str:
+    """Browsable HTML render (same data dict). The consistency-attribution table is the headline
+    surface (id='consistency') — this is what the Playwright test verifies renders."""
+    mode = data.get("mode", "gt_free")
+    h = ["<!doctype html><html lang='zh-Hant'><head><meta charset='utf-8'>",
+         "<title>YOLO 弱點報告</title><style>",
+         "body{font-family:system-ui,Segoe UI,'Microsoft JhengHei',sans-serif;margin:24px;color:#1a1a1a;max-width:1100px}",
+         "h1{font-size:22px}h2{font-size:17px;margin-top:26px;border-bottom:2px solid #eee;padding-bottom:4px}",
+         "table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}",
+         "th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}",
+         "th{background:#f5f5f7}.v{font-weight:700}.proxy{color:#a15c00;background:#fff8e6;padding:8px;border-radius:6px;font-size:12px}",
+         ".tax{color:#b00020}.model{color:#0064b0}.label_noise{color:#7a00b0}.clean{color:#2e7d32}",
+         "</style></head><body>"]
+    h.append(f"<h1>YOLO 弱點報告</h1><p>模式:<b>{_esc(mode)}</b>"
+             + (f" ｜ mAP@0.5 = <b>{_esc(data['mAP'])}</b>" if data.get("mAP") is not None else "")
+             + (f" ｜ loc_gap = {_esc(data.get('loc_gap'))}" if data.get("loc_gap") else "") + "</p>")
+    h.append(f"<p class='proxy'>{_esc(_PROXY.strip('_'))}(未重訓 → 排序為嫌疑/優先,非實測 mAP;可分性綁定目前 embedding 空間。)</p>")
+
+    pc = data.get("per_class") or []
+    if pc:
+        h.append("<h2 id='per-class'>哪一類最弱(per-class AP,弱→強)</h2>")
+        h.append("<table><tr><th>類別</th><th>AP</th><th>n_gt</th><th>主要漏報型態</th><th>最常混淆成</th></tr>")
+        for r in pc:
+            h.append(f"<tr><td>{_esc(r['cls'])}</td><td>{_esc(r['ap'])}</td><td>{_esc(r['n_gt'])}</td>"
+                     f"<td>{_esc(r.get('dom_fn_type') or '-')}</td><td>{_esc(r.get('top_confusion') or '-')}</td></tr>")
+        h.append("</table>")
+
+    cons = data.get("consistency") or []
+    h.append("<h2 id='consistency'>一致性歸因(GT × 嵌入:taxonomy / model / label?)</h2>")
+    if cons:
+        h.append("<table id='consistency-table'><tr><th>類別對</th><th>可分(embedding)</th><th>sep_err [CI]</th>"
+                 "<th>O[i→j]</th><th>C[i→j]</th><th>判定</th><th>支撐</th><th>建議</th></tr>")
+        for f in cons:
+            pair = f"{f['pair'][0]}↔{f['pair'][1]}"
+            sup = f"g{f['support']['golden_i']}/{f['support']['golden_j']} ({f['tier']})"
+            cls = {"taxonomy": "tax", "model": "model", "label_noise": "label_noise", "clean": "clean"}.get(f["verdict"], "")
+            h.append(f"<tr><td>{_esc(pair)}</td><td>{_esc(f['separable_in_embedding'])}</td>"
+                     f"<td>{_esc(f['sep_err'])} {_esc(f.get('sep_ci'))}</td><td>{_esc(f.get('O_ij'))}</td>"
+                     f"<td>{_esc(f.get('C_ij') if f.get('C_ij') is not None else '-')}</td>"
+                     f"<td class='v {cls}'>{_esc(f['verdict'])}</td><td>{_esc(sup)}</td><td>{_esc(f['action'])}</td></tr>")
+        h.append("</table>")
+    else:
+        h.append("<p>(無一致性發現:需 ≥2 類 golden;接 eval-ingest 才能歸因 taxonomy/model/label。)</p>")
+
+    cw = data.get("confident_wrong") or []
+    if cw:
+        h.append("<h2 id='confident-wrong'>最「自信卻錯」(GT 證實的誤報)</h2><table>"
+                 "<tr><th>影像</th><th>類別</th><th>conf</th><th>型態</th></tr>")
+        for r in cw:
+            h.append(f"<tr><td>{_esc(r['id'])}</td><td>{_esc(r.get('pred_class'))}</td>"
+                     f"<td>{_esc(r['conf'])}</td><td>{_esc(r.get('fp_type','-'))}</td></tr>")
+        h.append("</table>")
+
+    q = data.get("queue") or {}
+    if q:
+        h.append("<h2 id='queue'>該標哪些(逐弱類佇列,PROXY)</h2><ul>")
+        for c, cands in q.items():
+            h.append(f"<li><b>{_esc(c)}</b>: " + ", ".join(f"{_esc(x['id'])}({_esc(x['closeness'])})" for x in cands) + "</li>")
+        h.append("</ul>")
+
+    h.append("</body></html>")
+    return "".join(h)
