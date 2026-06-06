@@ -908,10 +908,16 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"趨勢({t['n_evals']} 次 eval-ingest):{t['note']}")
         if t["mAP_series"]:
             print("  mAP: " + " → ".join(str(v) for _ts, v in t["mAP_series"]))
+        # honesty: withhold the directional Δ verdict when the eval set changed (same rule the gate
+        # uses) — a "+0.1 ↑進步" across a changed val set may just be an easier eval; show the series only
+        changed = t.get("eval_set_changed")
         for c, d in sorted(t["per_class_delta"].items(), key=lambda kv: kv[1]):
             series = " → ".join(str(v) for _ts, v in t["per_class"][c] if v is not None)
-            arrow = "↑進步" if d > 0 else ("↓退步" if d < 0 else "→持平")
-            print(f"  {c}: {series}  (Δ{d} {arrow})")
+            if changed:
+                print(f"  {c}: {series}  (Δ 不可比較:eval set 期間內變過)")
+            else:
+                arrow = "↑進步" if d > 0 else ("↓退步" if d < 0 else "→持平")
+                print(f"  {c}: {series}  (Δ{d} {arrow})")
         hs = [v for _ts, v in t["health_series"] if v]
         if hs:
             print("  健康度軌跡: " + " → ".join(hs))

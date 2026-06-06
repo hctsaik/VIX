@@ -17,9 +17,15 @@ from .decision_log import DecisionLog
 from .manifest import Manifest
 
 
-def _content_hash(golden_hashes: list[str], thr_meta: dict) -> str:
-    payload = json.dumps({"golden": sorted(golden_hashes), "thr": thr_meta}, sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+def _content_hash(golden_hashes: list[str], thr_meta: dict, box_digests: dict | None = None) -> str:
+    """Content identity of the golden pool. When ``box_digests`` ({vix_hash: canonical box list}) is
+    given, the box geometry+labels are folded in — so a native-editor box edit changes the identity.
+    Without it, identity is image-id + thresholds only (vix_hash hashes IMAGE BYTES, not boxes), which
+    is why box edits were previously invisible to the audit/snapshot contract."""
+    payload = {"golden": sorted(golden_hashes), "thr": thr_meta}
+    if box_digests is not None:
+        payload["boxes"] = {h: box_digests.get(h, []) for h in sorted(golden_hashes)}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _latest_reasons(log_path: Path) -> dict[str, list[str]]:
@@ -39,6 +45,7 @@ def create_snapshot(
     thresholds_meta: dict | None = None,
     decision_log_path: str | Path | None = None,
     golden_tag: str = "golden",
+    box_digests: dict | None = None,
 ) -> dict:
     man = Manifest.load(manifest_path)
     reasons = _latest_reasons(Path(decision_log_path)) if decision_log_path else {}
@@ -64,11 +71,13 @@ def create_snapshot(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "n_golden": len(golden_hashes),
         "n_excluded": len(excluded),
-        "content_hash": _content_hash(golden_hashes, thr_meta),
+        "content_hash": _content_hash(golden_hashes, thr_meta, box_digests),
         "thresholds_meta": thr_meta,
         "composition": composition,
         "excluded": excluded,
     }
+    if box_digests is not None:  # record the box fingerprints so the snapshot is auditable/reproducible
+        snap["box_digests"] = {h: box_digests.get(h, []) for h in sorted(golden_hashes)}
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(snap, indent=2, ensure_ascii=False), encoding="utf-8")

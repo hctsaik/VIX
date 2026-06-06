@@ -296,6 +296,12 @@ def export(
     res = DatasetExporter(class_names).export(records, dst, copy_images=copy_images)
     manifest = verify_mod.write_dir_manifest(dst)  # hashes images + labels + data.yaml (U8/V8)
     res["export_manifest"] = str(manifest)
+    # boxes_hash: fingerprint the EXPORTED detections (label+geometry) so the audit log records WHAT
+    # boxes trained, not just how many — a native box edit now changes this on the export event (audit hole)
+    import hashlib as _hl
+    _canon = sorted([[Path(src).name, sorted([[d.label, *(round(v, 4) for v in d.bbox.as_tuple())] for d in dets])]
+                     for src, dets in records])
+    res["boxes_hash"] = _hl.sha256(json.dumps(_canon, sort_keys=True).encode("utf-8")).hexdigest()
     DecisionLog(cfg.decision_log_path).append(
         "export", decision="golden",
         extra={"dst": str(dst), "embedding_backend": cfg.embedding_backend, **res},
@@ -430,6 +436,19 @@ def drift_periods(adapter, cfg, tag_a, tag_b, top=3):  # S7 (cross-time)
     return result
 
 
+def _box_digests(adapter, want_tags: set) -> dict:
+    """Canonical per-sample box fingerprint (label + rounded bbox) over tagged samples. Folded into the
+    snapshot / training-pool content hash so a native-editor box edit (tighten/add/delete/relabel)
+    changes the audit identity — closing the box-level audit hole (vix_hash hashes image bytes only,
+    so box edits flow into export but were previously invisible to content_hash + the DecisionLog)."""
+    want = set(want_tags)
+    out: dict = {}
+    for h, _s, dets, t in adapter.samples():
+        if want & set(t):
+            out[h] = sorted([[d.label, *(round(v, 4) for v in d.bbox.as_tuple())] for d in dets])
+    return out
+
+
 def snapshot(adapter, cfg, version):  # S9
     # freeze the FULL thresholds (values, not just meta) so the decision is reproducible
     thr_meta = (
@@ -443,7 +462,8 @@ def snapshot(adapter, cfg, version):  # S9
 
         thr_meta = {**thr_meta, "anchor_ref_sha256": compute_hash(cfg.anchor_ref_path)}
     out = cfg.workspace / f"snapshot_{version}.json"
-    snap = snap_mod.create_snapshot(cfg.manifest_path, out, version, thr_meta, cfg.decision_log_path)
+    snap = snap_mod.create_snapshot(cfg.manifest_path, out, version, thr_meta, cfg.decision_log_path,
+                                    box_digests=_box_digests(adapter, {Tag.GOLDEN}))  # bind box content (audit hole)
     log.info("snapshot: %s (%d golden, %d excluded) -> %s",
              version, snap["n_golden"], snap["n_excluded"], out)
     return snap, out
@@ -849,9 +869,10 @@ def _training_pool_hash(adapter, cfg):
     """Content hash over the training pool (golden ∪ admitted) + thresholds meta — the checkpoint
     anchor for batch-admit (changes when a batch is admitted/un-admitted)."""
     from .core.snapshot import _content_hash
-    pool = sorted(h for h, _s, _d, t in adapter.samples() if Tag.GOLDEN in t or Tag.ADMITTED in t)
+    pool_tags = {Tag.GOLDEN, Tag.ADMITTED}
+    pool = sorted(h for h, _s, _d, t in adapter.samples() if pool_tags & set(t))
     thr_meta = ThresholdPolicy.load(cfg.thresholds_path).meta if cfg.thresholds_path.exists() else {}
-    return _content_hash(pool, thr_meta)
+    return _content_hash(pool, thr_meta, _box_digests(adapter, pool_tags))  # box content bound (audit hole)
 
 
 def batch_admit(adapter, cfg, batch, force=False):
