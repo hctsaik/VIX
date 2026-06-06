@@ -91,6 +91,7 @@
   <a href="#b5">B5. 稽核帳本 <span class="r">參考</span></a>
   <a href="#b6">B6. 進階診斷指令 <span class="r">參考</span></a>
   <a href="#b7">B7. 模型閉環:eval-ingest / bank-audit</a>
+  <a href="#b8">B8. 模型閉環 v2:錯誤分型 / box-qa / challenge-guard</a>
   <h2>實戰 &amp; 附錄</h2>
   <a href="#scenario">C. 標準情境 SOP</a>
   <a href="#explore">D. 探索更多 / 排解</a>
@@ -386,6 +387,40 @@ vix error-mine --top 20                          # 把 FP/FN 投影回 embedding
 </ul>
 <div class="warn"><b>離線 POC 流程(非 production alarm)</b>:① YOLO 低 conf mine(<code>infer --weights</code> 設低 conf,離線可用 <code>infer --synthetic</code> 試流程)→ ② <code>bank-audit</code> → ③ App + <code>@vix/review</code> 看 Top-K 覆判 → ④ <code>eval-ingest</code> 在凍結 <code>--eval</code> set 上算<b>逐類 recall delta</b>。
 <br><b>誠實注意</b>:沒有 GT 不能宣稱 recall —— engineer-confirmed-rate 是 precision-like,recall <b>只</b>在凍結有標籤 eval set 上經 eval-ingest 量、<b>逐類別</b>且無單一類別退步才算數。conf 下限用 sweep 選(recovered-defect vs review-load 曲線)。完整設計見 <a href="../discussion/bank-audit-design.md">bank-audit-design.md</a>。</div>
+
+<!-- ============ B8 ============ -->
+<h2 class="sec" id="b8">B8. 模型閉環 v2:錯誤分型 / box-qa / challenge-guard <span class="tag vix">VIX 客製</span></h2>
+<p>B7 把模型表現接回來;B8 把它<b>接得更準、接進 gate、並補上帳本漏洞</b>。設計與審查見 <a href="../discussion/model-loop-v2-design.md">model-loop-v2-design.md</a>(經兩位 review 代理壓力測試)。</p>
+
+<h3>① eval-ingest 升級:錯誤分型 + 定位尾巴</h3>
+<p><code>vix eval-ingest</code> 現在多算:</p>
+<ul>
+  <li><b>IoU sweep</b>:<code>mAP@0.5</code> vs <code>@0.75</code> 與 <code>loc_gap</code>。<code>loc_gap</code> 大 = 框系統性偏鬆(mAP@0.75:0.95 的頭號天花板),原本完全看不到。</li>
+  <li><b>逐錯誤分型</b> <code>fp_detail</code>/<code>fn_detail</code>:每個錯誤判為 <code>classification</code>(類別錯)/<code>localization</code>(框鬆)/<code>missed</code>(漏)/<code>background</code>(幻覺)。<b>同一錯誤只算一次</b>(同類鬆框=1 個 localization,不再重複計成 background FP)。</li>
+  <li><b>error-mine 升級</b>:把每個錯誤框<b>用 IoU 比對回該圖的偵測 embedding</b>,反查的是<b>誤差「區域」</b>而非整張圖平均 —— 一個小氣泡(FN)混在大反光(FP)裡時這是關鍵差別;比不到時乾淨退回整圖平均、不崩。</li>
+</ul>
+
+<h3>② box-qa — 逐框幾何健檢(唯讀)</h3>
+<pre><code>vix box-qa --top 50    # 只讀,不改任何 tag/帳本</code></pre>
+<p>對 golden 框逐一靜態檢查:<code>degenerate</code>(w·h≈0,會注入 NaN)/ <code>truncated</code>(貼邊→該設 ignore)/ <code>area_outlier</code>·<code>aspect_outlier</code>(超出<b>該類</b>自身 [p1,p99] 包絡;樣本不足的類別不發噪)。既有 <code>geometry</code> 只看跨期<b>聚合</b>漂移,從不檢查單一框 —— 這是最高「mAP/工」的純資料項。</p>
+
+<h3>③ challenge-guard — 把準度接進 gate(硬擋退步)</h3>
+<pre><code>vix eval-ingest val.jsonl                       # 先有一次評估
+vix set-eval-baseline --protect bubble --protect-drop 0.05 --map-drop 0.02
+# 之後每次 vix gate:整體 mAP 掉> 0.02、或受保護類別 AP 掉> 0.05 → NO-GO</code></pre>
+<p>原本 <code>gate</code> 完全不吃準度(只看 backlog/洩漏/漂移/稽核鏈)。現在它能<b>硬擋「策展偷偷掉準」</b>。三個誠實保證:</p>
+<ul>
+  <li><b>綁 eval set</b>:baseline 存 <code>eval_set_hash</code>(只雜湊 GT,不含預測);換了 eval set / 偷改 GT → 雜湊不符 → 發 advisory「比較無效」,<b>不假擋也不假過</b>。</li>
+  <li><b>受保護類別 fail-closed</b>:指定的關鍵類別<b>一律</b>評估;若其 eval 樣本不足 → 直接「無法認證」NO-GO(不會因樣本少而被降級放行)。</li>
+  <li><b>小樣本誠實</b>:非保護類別樣本少 → 只進 advisory,不硬擋(避免單一 IoU、小 N 的 AP 抖動亂跳 GO/NO-GO)。</li>
+</ul>
+
+<h3>④ 帳本完整性修復(Tier 0)</h3>
+<ul>
+  <li><code>resolve</code>/<code>dismiss</code>/<code>restore-dismissed</code> 對<b>不存在的 id</b> 不再靜默成功 + 寫幻影記錄 —— 改成<b>乾淨報錯</b>(提醒:App 顯示的是 sample id,CLI 要 vix_hash)。整批先驗證再動作,不半套。</li>
+  <li><code>resolve --confirm --label X</code> 改標籤現在<b>可逆</b>:沿用 <code>relabel_changes.jsonl</code>,<code>vix relabel --rollback</code> 即可還原(原本只有 <code>relabel</code> 可逆)。</li>
+</ul>
+<div class="warn"><b>誠實注意(同 B7):</b>recall/mAP 只在<b>凍結、有標籤</b>的 eval set 上算數。錯誤分型與 box-qa 的<b>量測</b>(IoU/面積/長寬比)精確,但<b>分類</b>用固定 IoU band、是確定性 policy 而非語意真值;error-mine 在外部框比不到偵測時會退回整圖平均(已揭露)。</div>
 
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>

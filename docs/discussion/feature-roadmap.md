@@ -31,7 +31,11 @@ VIX 是一個封閉的 embedding 世界 —— `route`/`gate`/`coverage`/`label-
 
 ## 第二層:純資料、可立即出貨、直接拉 mAP(不需等 eval)
 
-### #2 逐框「框品質」QA `vix box-qa`
+> **更新(model-loop v2,已實作 + 測試):** #1 的解析度已加深(逐錯誤分型 classification/localization/missed/background、IoU sweep `loc_gap`、error-mine 改用誤差框 region),
+> **#2 box-qa**、**#7 challenge-guard**(把 mAP/受保護類別 AP 退步接進 gate 硬擋)均已落地,另修兩個帳本完整性 bug。
+> 設計與審查見 [model-loop-v2-design.md](model-loop-v2-design.md),操作見 SOP §B8。下方 #2/#7 條目保留作背景脈絡。
+
+### #2 逐框「框品質」QA `vix box-qa` ✅ 已實作
 逐張、逐框靜態檢查:**過鬆/過大框、退化框(w或h≈0)、貼邊截斷框、長寬比超出該類包絡**。
 - **→ mAP**:**標註框緊度是 mAP@0.5:0.95 的頭號天花板**。系統性鬆 10–15% 的框會教出鬆的先驗,在嚴格 IoU(0.75–0.95)大量丟分;退化框是 NaN/loss 爆衝來源;截斷框該設 ignore。
 - 現有 `geometry` 只做兩期**聚合**均值漂移,**從不檢查單一框品質** → 這是最高「mAP/工」的純資料項。成本低。
@@ -59,7 +63,7 @@ VIX 是一個封閉的 embedding 世界 —— `route`/`gate`/`coverage`/`label-
 把 `label-noise` + eval FN/混淆的建議,做成 App 內 接受/編輯/拒絕 → 寫回 golden(全程稽核)→ 重匯出,並用 challenge set 確認修正真的有幫助。
 - **→ mAP**:VIX 目前只「偵測」標錯就斷在一張清單;修正才是最高 ROI 的資料介入。錯框注入梯度雜訊直接壓 AP,修幾%的標錯常換來數個 mAP 點。
 
-### #7 帶標籤的 held-out「挑戰集」/ 回歸守門 `vix challenge-guard`
+### #7 帶標籤的 held-out「挑戰集」/ 回歸守門 `vix challenge-guard` ✅ 已實作
 一個凍結、永不訓練、**有標籤**的評估集(與 unlabeled `anchor` 互補),每次資料變更都對它打分;
 mAP 掉(整體或受保護類別)超過門檻 → gate **硬擋**。
 - **→ mAP**:這是讓上面所有功能能「大膽改」而不會偷偷掉準的安全閥。現在 gate 只看覆核積壓/洩漏/漂移/稽核,**沒有任何準度指標**。

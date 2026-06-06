@@ -8,16 +8,11 @@ box off" (localization error — needs re-drawing). Pure geometry, testable.
 from __future__ import annotations
 
 from ..types import BBox, Detection
+from .eval_ingest import iou as _iou  # single shared IoU primitive (no duplicate math)
 
 
 def bbox_iou(a: BBox, b: BBox) -> float:
-    ax1, ay1, ax2, ay2 = a.cx - a.w / 2, a.cy - a.h / 2, a.cx + a.w / 2, a.cy + a.h / 2
-    bx1, by1, bx2, by2 = b.cx - b.w / 2, b.cy - b.h / 2, b.cx + b.w / 2, b.cy + b.h / 2
-    iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
-    ih = max(0.0, min(ay2, by2) - max(ay1, by1))
-    inter = iw * ih
-    union = a.w * a.h + b.w * b.h - inter
-    return inter / union if union > 0 else 0.0
+    return _iou(a.as_tuple(), b.as_tuple())
 
 
 def diagnose_image(

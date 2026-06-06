@@ -52,3 +52,46 @@ def test_resolve_batch_audited(tmp_path):
     assert n == 1
     recs = DecisionLog(cfg.decision_log_path).read_all()
     assert any(r["event"] == "review" and r["reviewer_id"] == "u1" for r in recs)
+
+
+# --- Tier 0: ledger-integrity bug fixes (model-loop-v2 design B1/B2) -----------
+
+import pytest  # noqa: E402
+
+
+def _n_records(cfg):
+    return len(DecisionLog(cfg.decision_log_path).read_all())
+
+
+def test_resolve_unknown_id_raises_and_writes_no_audit(tmp_path):
+    cfg, ad = _setup(tmp_path)
+    before = _n_records(cfg)
+    with pytest.raises(ValueError, match="找不到 vix_hash"):
+        pipeline.resolve_review(ad, cfg, "NOPE", "confirm")
+    assert _n_records(cfg) == before  # B1: no phantom confirmation written to the immutable ledger
+
+
+def test_dismiss_unknown_id_raises_and_writes_no_audit(tmp_path):
+    cfg, ad = _setup(tmp_path)
+    before = _n_records(cfg)
+    with pytest.raises(ValueError, match="找不到 vix_hash"):
+        pipeline.dismiss(ad, cfg, ["r1", "NOPE"])  # whole batch validated -> r1 not tagged either
+    assert _n_records(cfg) == before
+    assert Tag.REJECTED not in _tags(ad, "r1")  # B1: no partial side effect
+
+
+def test_restore_dismissed_unknown_id_raises(tmp_path):
+    cfg, ad = _setup(tmp_path)
+    before = _n_records(cfg)
+    with pytest.raises(ValueError, match="找不到 vix_hash"):
+        pipeline.restore_dismissed(ad, cfg, ["NOPE"])
+    assert _n_records(cfg) == before
+
+
+def test_resolve_label_is_reversible_via_rollback(tmp_path):
+    cfg, ad = _setup(tmp_path)
+    pipeline.resolve_review(ad, cfg, "r1", "confirm", label="b")
+    assert next(d.label for h, _s, dets, _t in ad.samples() if h == "r1" for d in dets) == "b"
+    n = pipeline.relabel_rollback(ad, cfg)  # B2: resolve --label is now undoable via the same path relabel uses
+    assert n == 1
+    assert next(d.label for h, _s, dets, _t in ad.samples() if h == "r1" for d in dets) == "a"

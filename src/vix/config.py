@@ -74,6 +74,14 @@ class Config:
         return self.workspace / "calibration.json"
 
     @property
+    def eval_results_path(self) -> Path:
+        return self.workspace / "eval_results.json"
+
+    @property
+    def eval_baseline_path(self) -> Path:  # frozen mAP/AP + eval_set_hash for challenge-guard
+        return self.workspace / "eval_baseline.json"
+
+    @property
     def lancedb_dir(self) -> Path:
         return self.workspace / "lancedb"
 

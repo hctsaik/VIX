@@ -36,7 +36,7 @@ from .core.exporter import DatasetExporter
 from .core.calibration import apply_temperature, expected_calibration_error, fit_temperature
 from .core.confident_learning import confident_joint, find_label_issues, noise_rates
 from .core.drift_types import diagnose_drift_type
-from .core.gate import cost_gate, pre_train_gate
+from .core.gate import cost_gate, pre_train_gate, regression_check
 from .core.geometry import geometry_drift
 from .core.parity import performance_parity
 from .core.scorer import _l2norm
@@ -671,11 +671,30 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     backends = {r.get("extra", {}).get("embedding_backend") for r in dlog_all}
     backends.discard(None)
     backend_mixed = len(backends) > 1  # AI6: mixing pixel_fallback + DINOv2 makes thresholds/trends incomparable
+
+    # challenge-guard: opt-in mAP regression block (only when an eval result + a frozen baseline exist)
+    extra_reasons: list[str] = []
+    extra_checks: dict = {}
+    if cfg.eval_results_path.exists() and cfg.eval_baseline_path.exists():
+        cur = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
+        base = json.loads(cfg.eval_baseline_path.read_text(encoding="utf-8"))
+        blocking, advisory = regression_check(
+            cur.get("per_class_ap", {}), base.get("per_class_ap", {}),
+            float(cur.get("mAP") or 0.0), float(base.get("mAP") or 0.0),
+            map_drop_thr=float(base.get("map_drop_thr", 0.02)),
+            protected=base.get("protected", {}),
+            eval_support={k: int(v) for k, v in cur.get("n_gt", {}).items()},
+            eval_set_changed=(cur.get("eval_set_hash") != base.get("eval_set_hash")),
+        )
+        extra_reasons += blocking
+        if advisory:
+            extra_checks["regression_advisory"] = advisory
+
     result = pre_train_gate(
         n_review_open=n_review, golden_train_overlap=overlap,
         under_represented=under, drift_triggered=drift_triggered,
         audit_chain_intact=audit_ok, n_golden=n_golden, eval_golden_overlap=eval_golden_overlap,
-        backend_mixed=backend_mixed,
+        backend_mixed=backend_mixed, extra_reasons=extra_reasons, extra_checks=extra_checks,
     )
     DecisionLog(cfg.decision_log_path).append(
         "pre_train_gate", decision=result.verdict, extra={"reasons": result.reasons}
@@ -716,45 +735,82 @@ def eval_ingest(adapter, cfg, results_path, iou_thr=0.5):
     """Ingest a held-out val evaluation (GT + predictions) -> per-class AP, confusion,
     and per-image FP/FN; attach eval_fp/eval_fn fields and store eval_results.json.
     Turns VIX from model-blind (confidence+embedding proxies) into model-validated."""
-    from .core.eval_ingest import evaluate
+    from .core.eval_ingest import eval_set_hash, evaluate
 
     raw = Path(results_path).read_text(encoding="utf-8-sig").strip()
     images = json.loads(raw) if raw.startswith("[") else [
         json.loads(line) for line in raw.splitlines() if line.strip()
     ]
     res = evaluate(images, iou_thr=iou_thr)
+    res["eval_set_hash"] = eval_set_hash(images)  # binds this result to the exact eval SET (R6)
     for h, pi in res["per_image"].items():  # so review-queue / the App can sort by model failure
         try:
             adapter.attach_fields(h, {"eval_fp": pi["n_fp"], "eval_fn": pi["n_fn"]})
         except Exception:  # noqa: BLE001 - eval may reference hashes not in this adapter view
             pass
-    (cfg.workspace / "eval_results.json").write_text(
+    cfg.eval_results_path.write_text(  # per_image stripped; fp_detail/fn_detail/eval_set_hash kept
         json.dumps({k: v for k, v in res.items() if k != "per_image"}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     DecisionLog(cfg.decision_log_path).append(
         "eval_ingest", decision=str(res["mAP"]),
-        extra={"mAP": res["mAP"], "per_class_ap": res["per_class_ap"], "n_fn_images": len(res["fn_hashes"])},
+        extra={"mAP": res["mAP"], "per_class_ap": res["per_class_ap"],
+               "loc_gap": res.get("loc_gap"), "eval_set_hash": res["eval_set_hash"],
+               "n_fn_images": len(res["fn_hashes"])},
     )
     log.info("eval_ingest: mAP=%.3f, %d classes, %d FN / %d FP images",
              res["mAP"], len(res["per_class_ap"]), len(res["fn_hashes"]), len(res["fp_hashes"]))
     return res
 
 
-def error_mine(adapter, cfg, top=20):
-    """Rank unlabeled candidates by closeness to the model's val FP/FN error regions,
-    so labeling effort lands on the model's *demonstrated* failures (not just novelty)."""
-    p = cfg.workspace / "eval_results.json"
+def _match_box_emb(box, det_embs, thr):
+    """Best stored-detection embedding whose box IoU>=thr with the (external) error box, else None.
+    The eval JSON's pred/GT boxes carry no embedding and may come from a different run, so we
+    match them back to a stored detection by geometry rather than assuming a 1:1 correspondence."""
+    from .core.eval_ingest import iou
+    best, best_iou = None, thr
+    for d, e in det_embs:
+        ov = iou(tuple(box), d.bbox.as_tuple())
+        if ov >= best_iou:
+            best_iou, best = ov, e
+    return best
+
+
+def error_mine(adapter, cfg, top=20, emb_match_iou=0.5, fn_match_iou=0.1):
+    """Rank unlabeled candidates by closeness to the model's val FP/FN error *regions*, so
+    labeling effort lands on the model's demonstrated failures (not just novelty).
+
+    Uses the typed fp_detail/fn_detail boxes (T1a): each error box is IoU-matched back to a
+    stored detection's embedding (FP boxes precisely; FN boxes via an overlapping pred, down to
+    the localization band). If an error image yields no matchable box (e.g. a pure `missed` FN,
+    or external boxes that don't align), it falls back to that image's detection-mean embedding
+    — strictly better than the old whole-error-set mean, and degrades cleanly on memory/pixel
+    fallback adapters (model-loop-v2 R1)."""
+    p = cfg.eval_results_path
     if not p.exists():
         raise ValueError("尚無評估結果;請先執行 vix eval-ingest <results.json>")
     ev = json.loads(p.read_text(encoding="utf-8"))
+    fp_detail, fn_detail = ev.get("fp_detail", {}), ev.get("fn_detail", {})
     error_hashes = set(ev.get("fn_hashes", [])) | set(ev.get("fp_hashes", []))
     samples = {h: dets for h, _s, dets, _t in adapter.samples()}
-    err_emb = []
+    err_emb, n_box, n_fallback = [], 0, 0
     for h in error_hashes:
-        embs = [np.asarray(d.embedding, float) for d in (samples.get(h) or []) if d.embedding is not None]
-        if embs:
-            err_emb.append(np.mean(np.vstack(embs), axis=0))
+        det_embs = [(d, np.asarray(d.embedding, float)) for d in (samples.get(h) or []) if d.embedding is not None]
+        matched = []
+        for box in fp_detail.get(h, []):  # FP regions are predictions -> match tightly
+            e = _match_box_emb(box["bbox"], det_embs, emb_match_iou)
+            if e is not None:
+                matched.append(e)
+        for box in fn_detail.get(h, []):  # FN regions -> the overlapping pred (looser, localization band)
+            e = _match_box_emb(box["bbox"], det_embs, fn_match_iou)
+            if e is not None:
+                matched.append(e)
+        if matched:
+            err_emb.extend(matched)
+            n_box += len(matched)
+        elif det_embs:  # no matchable error box -> image-level mean so the error image still counts
+            err_emb.append(np.mean(np.vstack([e for _d, e in det_embs]), axis=0))
+            n_fallback += 1
     if not err_emb:
         return []
     E = _l2norm(np.vstack(err_emb))
@@ -766,8 +822,50 @@ def error_mine(adapter, cfg, top=20):
         ranked.append({"id": it.id, "closeness": round(sim, 4),
                        "why": f"接近模型驗證集誤差區(cos {sim:.3f});標此張最可能補到模型實際失敗處"})
     ranked.sort(key=lambda r: -r["closeness"])
-    log.info("error_mine: %d candidates ranked vs %d error regions", len(cands), len(err_emb))
+    log.info("error_mine: %d candidates vs %d error regions (%d box-matched, %d image-mean fallback)",
+             len(cands), len(err_emb), n_box, n_fallback)
     return ranked[:top]
+
+
+def set_eval_baseline(adapter, cfg, protected=None, map_drop_thr=0.02):  # challenge-guard baseline (T2)
+    """Freeze the current eval_results.json as the regression baseline: mAP + per-class AP +
+    the eval_set_hash. A later data change that drops overall mAP, or a *protected* class's AP,
+    is then hard-blocked by `pre_train_gate`. ``protected`` = {class: max_allowed_AP_drop}."""
+    if not cfg.eval_results_path.exists():
+        raise ValueError("尚無評估結果;請先執行 vix eval-ingest <results.json>")
+    cur = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
+    baseline = {
+        "mAP": cur.get("mAP"),
+        "per_class_ap": cur.get("per_class_ap", {}),
+        "n_gt": cur.get("n_gt", {}),
+        "eval_set_hash": cur.get("eval_set_hash"),
+        "map_drop_thr": map_drop_thr,
+        "protected": protected or {},
+    }
+    cfg.eval_baseline_path.write_text(json.dumps(baseline, ensure_ascii=False, indent=2), encoding="utf-8")
+    DecisionLog(cfg.decision_log_path).append(
+        "set_eval_baseline", decision=str(cur.get("mAP")),
+        extra={"eval_set_hash": cur.get("eval_set_hash"), "mAP": cur.get("mAP"), "protected": protected or {}},
+    )
+    log.info("set_eval_baseline: mAP=%s frozen as challenge-guard baseline (protected=%s)",
+             cur.get("mAP"), list((protected or {}).keys()))
+    return baseline
+
+
+def box_qa(adapter, cfg, top=50, min_support=8):  # T1c per-box geometry QA (read-only)
+    """Static per-box quality audit of golden boxes (degenerate / edge-truncated / area &
+    aspect outliers vs each class's own envelope). Read-only: returns a ranked issue list,
+    writes no tags and no ledger entry (same posture as `harmful` without --remove)."""
+    from .core.box_qa import audit_boxes
+
+    records = [
+        {"id": h, "label": d.label, "bbox": d.bbox.as_tuple()}
+        for h, _s, dets, tags in adapter.samples() if Tag.GOLDEN in tags
+        for d in dets
+    ]
+    issues = audit_boxes(records, min_support=min_support)
+    log.info("box_qa: %d golden boxes audited, %d issues", len(records), len(issues))
+    return issues[:top]
 
 
 def bank_audit(adapter, cfg, defect_tag=Tag.GOLDEN, reflection_tag=Tag.REJECTED, normal_tag=None,
@@ -933,7 +1031,21 @@ def routing_diff(cfg):  # V4 before/after routing diff
     return {"changed": changed, "n_changed": len(changed), "added": added, "removed": removed}
 
 
+def _require_known(adapter, ids):  # B1: fail-closed — never act/log on an id the dataset lacks
+    """Raise ValueError if any id is not a known vix_hash. The App shows FiftyOne *sample ids*
+    (not vix_hash); a wrong/copied id must error loudly here, never silently no-op while still
+    printing success AND writing a phantom record into the immutable decision log."""
+    known = {h for h, *_ in adapter.samples()}
+    missing = [i for i in ids if i not in known]
+    if missing:
+        raise ValueError(
+            f"找不到 vix_hash {missing};App 顯示的是 sample id,"
+            "請改用 vix_hash(見 vix history / vix explain),或用檔名"
+        )
+
+
 def dismiss(adapter, cfg, ids):  # V6 mark false alarms; excluded from future review queue
+    _require_known(adapter, ids)  # B1: validate the whole batch before any tag/audit write
     for h in ids:
         adapter.apply_tags(h, [Tag.REJECTED])
     DecisionLog(cfg.decision_log_path).append("dismiss", decision=str(len(ids)), extra={"ids": list(ids)})
@@ -942,8 +1054,12 @@ def dismiss(adapter, cfg, ids):  # V6 mark false alarms; excluded from future re
 
 
 def restore_dismissed(adapter, cfg, ids):  # AL2/AL9 reverse a dismiss/harmful-remove (un-reject), audited
-    for h in ids:
-        adapter.remove_tags(h, [Tag.REJECTED])
+    _require_known(adapter, ids)  # B1
+    try:
+        for h in ids:
+            adapter.remove_tags(h, [Tag.REJECTED])
+    except NotImplementedError:  # surface as a clean user error, not a raw traceback past cli.py
+        raise ValueError("此 adapter 不支援移除 tag,無法復原 dismiss") from None
     DecisionLog(cfg.decision_log_path).append("undismiss", decision=str(len(ids)), extra={"ids": list(ids)})
     log.info("restore_dismissed: un-rejected %d samples", len(ids))
     return len(ids)
@@ -1073,14 +1189,22 @@ def resolve_review(adapter, cfg, vix_hash, decision, label=None, reviewer_id="re
     Adding the golden/rejected tag is what removes the sample from the review
     queue (review_queue excludes those tags), so no tag-removal is needed.
     """
+    _require_known(adapter, [vix_hash])  # B1: never log a phantom confirmation for an unknown id
     if decision == "confirm":
         if label:
+            changes = []  # B2: make resolve --label reversible via the same log relabel uses
             for h, _src, dets, _t in adapter.samples():
                 if h == vix_hash:
-                    for d in dets:
-                        d.label = label
+                    for i, d in enumerate(dets):
+                        if d.label != label:
+                            changes.append({"id": f"{h}:{i}", "old": d.label, "new": label})  # capture pre-overwrite
+                            d.label = label
                     adapter.set_detections(h, dets)
                     break
+            if changes:
+                with open(cfg.workspace / "relabel_changes.jsonl", "a", encoding="utf-8") as f:
+                    for c in changes:
+                        f.write(json.dumps(c) + "\n")
         adapter.apply_tags(vix_hash, [Tag.GOLDEN])
         outcome = label or "confirmed"
     elif decision == "false_alarm":

@@ -264,6 +264,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sevi.add_argument("--iou", type=float, default=0.5)
     sem = sub.add_parser("error-mine", help="rank unlabeled candidates nearest the model's eval FP/FN errors")
     sem.add_argument("--top", type=int, default=20)
+    seb = sub.add_parser("set-eval-baseline", help="freeze current eval as the challenge-guard baseline (gate hard-blocks on mAP / protected-class AP regression)")
+    seb.add_argument("--protect", action="append", default=[], metavar="CLASS", help="protected class (repeatable); its AP drop hard-blocks the gate, even at low support (fail-closed)")
+    seb.add_argument("--protect-drop", type=float, default=0.05, help="max allowed AP drop for protected classes")
+    seb.add_argument("--map-drop", type=float, default=0.02, help="max allowed overall mAP drop")
+    sbq = sub.add_parser("box-qa", help="per-box geometry QA on golden boxes (degenerate/truncated/area/aspect outliers) — read-only")
+    sbq.add_argument("--top", type=int, default=50)
     sba = sub.add_parser("bank-audit", help="multi-bank Top-K embedding audit of low-conf proposals -> defect/reflection/unknown (advisory)")
     sba.add_argument("--defect-tag", default="golden")
     sba.add_argument("--reflection-tag", default="rejected")
@@ -690,6 +696,9 @@ def _main(argv: list[str] | None = None) -> int:
     elif args.cmd == "eval-ingest":
         r = pipeline.eval_ingest(adapter, cfg, args.results, iou_thr=args.iou)
         print(f"mAP@{r['iou_thr']}={r['mAP']}")
+        if r.get("loc_gap"):
+            mbi = r.get("map_by_iou", {})
+            print(f"  定位尾巴 loc_gap={r['loc_gap']}(mAP@0.5={mbi.get(0.5)} vs @0.75={mbi.get(0.75)};框越鬆此值越大)")
         for c, ap in sorted(r["per_class_ap"].items(), key=lambda kv: kv[1]):
             print(f"  AP {c}: {ap}")
         if r["confusion"]:
@@ -705,6 +714,19 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"{r['id']}  closeness={r['closeness']}  {r['why']}")
         if not ranked:
             print("無候選(需先 eval-ingest,且未標註候選需有 embedding)")
+
+    elif args.cmd == "set-eval-baseline":
+        protected = {c: args.protect_drop for c in args.protect}
+        b = pipeline.set_eval_baseline(adapter, cfg, protected=protected, map_drop_thr=args.map_drop)
+        print(f"baseline mAP={b['mAP']} 已凍結(eval_set_hash={b['eval_set_hash']})")
+        print(f"  保護類別={list(protected) or '(無)'};整體 mAP 掉> {args.map_drop} 或保護類別 AP 掉> {args.protect_drop} → 下次 gate NO-GO")
+
+    elif args.cmd == "box-qa":
+        issues = pipeline.box_qa(adapter, cfg, top=args.top)
+        for it in issues:
+            print(f"{it['id']}  [{it['issue']}] {it['label']}: {it['why']}")
+        if not issues:
+            print("無框品質問題(或 golden 框數不足以建立各類包絡)")
 
     elif args.cmd == "bank-audit":
         r = pipeline.bank_audit(
