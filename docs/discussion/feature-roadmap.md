@@ -48,6 +48,9 @@ VIX 是一個封閉的 embedding 世界 —— `route`/`gate`/`coverage`/`label-
 > 逐對 **k-fold CV** 報告凍結→投影可分性 + **rescued** 旗標:把一致性層的「在 DINO 不可分」死路變成可證偽的「表徵問題、可修」。`core/embed_adapt.py`、SOP §B11。
 > 仍待:把投影套用到全 stack(需 gate 驗證)+ 佇列命中率飛輪(放大步 #1)。
 
+> **更新(放大步全部 v1 完成):** #1 投影 **gate 驗證後套用**到 consistency(死路→`representation_fixable`)+ error-mine(投影空間排序);#1 **佇列命中率** `vix queue-hit-rate`(error-mine/hardneg/weakness/bank join 裁決 → 命中率+趨勢,誠實只算已解決,併進 weakness-report)。
+> `core/queue_metrics.py`、`projection_gate`、SOP §B11–B12。仍待:命中率回授重排佇列 + 投影套進校準路徑(routing/threshold,需在投影空間重校準 + gate 驗證)。
+
 ### #2 逐框「框品質」QA `vix box-qa` ✅ 已實作
 逐張、逐框靜態檢查:**過鬆/過大框、退化框(w或h≈0)、貼邊截斷框、長寬比超出該類包絡**。
 - **→ mAP**:**標註框緊度是 mAP@0.5:0.95 的頭號天花板**。系統性鬆 10–15% 的框會教出鬆的先驗,在嚴格 IoU(0.75–0.95)大量丟分;退化框是 NaN/loss 爆衝來源;截斷框該設 ignore。

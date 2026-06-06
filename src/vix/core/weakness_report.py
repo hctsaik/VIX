@@ -84,7 +84,19 @@ def render_weakness_report(data: dict) -> str:
                      f"| **{f['verdict']}** | {sup} | {f['action']} |")
         L.append("")
 
-    if not (pc or cw or ov or cons):
+    hr = data.get("hit_rate") or []
+    if hr:
+        L.append("\n## 佇列命中率(VIX 的建議到底準不準?自我校準)\n")
+        L.append("把過去的建議佇列 join 後來的人工裁決:準度越高、趨勢越上 = 這個佇列越值得跟。")
+        L.append("| 佇列 | 預測 | 已解決/發出 | 命中率 | 趨勢 | 註 |")
+        L.append("|---|---|---|---|---|---|")
+        for q in hr:
+            note = "樣本不足僅供參考" if q.get("insufficient") else ""
+            prec = "-" if q.get("precision") is None else q["precision"]
+            L.append(f"| {q['queue']} | {q['predict']} | {q['resolved']}/{q['emitted']} | {prec} | {q.get('trend')} | {note} |")
+        L.append("")
+
+    if not (pc or cw or ov or cons or hr):
         L.append("\n_(無可用訊號:需先 `vix eval-ingest`(有標註 val set)或 `vix calibrate`(GT-free 翻盤),或建立 golden(一致性歸因)。)_\n")
 
     L.append("\n---\n> " + _PROXY.strip("_"))
@@ -154,6 +166,18 @@ def render_weakness_report_html(data: dict) -> str:
         for c, cands in q.items():
             h.append(f"<li><b>{_esc(c)}</b>: " + ", ".join(f"{_esc(x['id'])}({_esc(x['closeness'])})" for x in cands) + "</li>")
         h.append("</ul>")
+
+    hr = data.get("hit_rate") or []
+    if hr:
+        h.append("<h2 id='hit-rate'>佇列命中率(VIX 建議準不準?自我校準)</h2><table id='hit-rate-table'>"
+                 "<tr><th>佇列</th><th>預測</th><th>已解決/發出</th><th>命中率</th><th>趨勢</th><th>註</th></tr>")
+        for qq in hr:
+            note = "樣本不足僅供參考" if qq.get("insufficient") else ""
+            prec = "-" if qq.get("precision") is None else qq["precision"]
+            h.append(f"<tr><td>{_esc(qq['queue'])}</td><td>{_esc(qq['predict'])}</td>"
+                     f"<td>{_esc(qq['resolved'])}/{_esc(qq['emitted'])}</td><td>{_esc(prec)}</td>"
+                     f"<td>{_esc(qq.get('trend'))}</td><td>{_esc(note)}</td></tr>")
+        h.append("</table>")
 
     h.append("</body></html>")
     return "".join(h)

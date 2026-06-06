@@ -788,6 +788,40 @@ def _active_projection(cfg):
     return proj
 
 
+def _log_queue(cfg, queue, ids, predict):
+    """Record a suggestion-queue emission so its hit-rate can be measured once ids get resolved.
+    predict: 'wrong' (hardneg) | 'defect' (bank hard-positive) | 'label' (error-mine / weakness)."""
+    ids = [i for i in (ids or [])]
+    if not ids:
+        return
+    DecisionLog(cfg.decision_log_path).append(
+        "queue_emit", decision=queue, extra={"queue": queue, "ids": ids, "predict": predict})
+
+
+def queue_hit_rate(cfg, min_resolved=5):
+    """Did VIX's suggestion queues turn out right? Joins logged `queue_emit` events with later human
+    resolutions (review confirm/false_alarm, dismiss) -> per-queue precision / coverage / trend.
+    Honest: only ids resolved AFTER emission count; only resolved ids score; insufficient flag."""
+    from .core.queue_metrics import hit_rate
+    recs = DecisionLog(cfg.decision_log_path).read_all()
+    emissions, resolutions = [], []
+    for seq, r in enumerate(recs):
+        ev = r.get("event")
+        if ev == "queue_emit":
+            ex = r.get("extra", {})
+            emissions.append({"queue": ex.get("queue"), "ids": ex.get("ids", []),
+                              "predict": ex.get("predict", "label"), "seq": seq})
+        elif ev == "review" and r.get("vix_hash"):
+            outcome = "rejected" if r.get("decision") == "false_alarm" else "confirmed"
+            resolutions.append({"id": r["vix_hash"], "outcome": outcome, "seq": seq})
+        elif ev == "dismiss":
+            for i in r.get("extra", {}).get("ids", []):
+                resolutions.append({"id": i, "outcome": "rejected", "seq": seq})
+    queues = hit_rate(emissions, resolutions, min_resolved=min_resolved)
+    log.info("queue_hit_rate: %d emissions, %d resolutions, %d queues", len(emissions), len(resolutions), len(queues))
+    return {"queues": queues, "n_emissions": len(emissions), "n_resolutions": len(resolutions)}
+
+
 def _match_box_emb(box, det_embs, thr):
     """Best stored-detection embedding whose box IoU>=thr with the (external) error box, else None.
     The eval JSON's pred/GT boxes carry no embedding and may come from a different run, so we
@@ -956,8 +990,8 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
 
     from .core.weakness_report import render_weakness_report, render_weakness_report_html
 
-    data = {"mode": "gt_free", "mAP": None, "loc_gap": None, "per_class": [],
-            "confusion": [], "confident_wrong": [], "overturns": [], "queue": {}, "consistency": []}
+    data = {"mode": "gt_free", "mAP": None, "loc_gap": None, "per_class": [], "confusion": [],
+            "confident_wrong": [], "overturns": [], "queue": {}, "consistency": [], "hit_rate": []}
     ev = None
     if cfg.eval_results_path.exists():
         ev = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
@@ -1004,6 +1038,10 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
         _emb_by_class(adapter, {Tag.GOLDEN}),
         (ev.get("confusion") if ev else None), (ev.get("n_gt") if ev else None),
         adapt_rescued=_adapt_rescued(cfg))
+
+    # queue hit-rate: log THIS report's label queue, then surface every queue's measured precision/trend
+    _log_queue(cfg, "weakness_queue", [c["id"] for cands in data["queue"].values() for c in cands], "label")
+    data["hit_rate"] = queue_hit_rate(cfg)["queues"]
 
     out = Path(out_path or (cfg.workspace / "weakness_report.md"))
     out.write_text(render_weakness_report(data), encoding="utf-8")

@@ -95,6 +95,7 @@
   <a href="#b9">B9. YOLO 弱點報告:hardneg / weakness-report</a>
   <a href="#b10">B10. 一致性歸因:consistency(GT × 嵌入)</a>
   <a href="#b11">B11. 領域自適應 embedding:adapt-embedding</a>
+  <a href="#b12">B12. 佇列命中率自我校準:queue-hit-rate</a>
   <h2>實戰 &amp; 附錄</h2>
   <a href="#scenario">C. 標準情境 SOP</a>
   <a href="#explore">D. 探索更多 / 排解</a>
@@ -474,6 +475,17 @@ vix adapt-embedding --save --enable  # gate=GO 才寫啟用標記;之後 error-m
   <li><b>Gate(套用前驗證):</b>macro 可分性需改善<b>且無任一對退步</b>才 <code>GO</code>;<code>--enable</code> 只在 <code>GO</code> 時寫啟用標記(像 challenge-guard,絕不偷偷讓某對變差)。</li>
 </ul>
 <div class="warn"><b>啟用後的套用(gate-validated):</b>① <code>consistency</code>:被救回的對,<code>taxonomy</code>/死路判定自動翻成 <b>representation_fixable</b>(「別 merge,學到的投影已能分開 → 表徵問題」)。② <code>error-mine</code>:候選在<b>投影(defect-discriminative)空間</b>排序,更聚焦真正失敗處。<br><b>邊界:</b>error-mine 只在投影 <b>≥2 維</b>(≥3 類)時套用(2 類→1 維,cosine 排序退化)。把投影套到<b>校準路徑</b>(routing/threshold/bank-audit,需在投影空間重校準閾值)仍是下一步——須經 gate/eval 驗證不退步才打開。DINO 768 維、golden 少時 PCA 可能丟低變異判別方向(shrinkage 緩解)。</div>
+
+<!-- ============ B12 ============ -->
+<h2 class="sec" id="b12">B12. 佇列命中率自我校準:<code>queue-hit-rate</code> <span class="tag vix">VIX 客製</span></h2>
+<p>VIX 的建議佇列(error-mine / hardneg / weakness 佇列 / bank hard-positive)今天都是 PROXY、從不被打分。等你<b>裁決</b>了其中一些 id(resolve confirm→golden / false_alarm / dismiss),就能回頭量每個佇列的<b>命中率</b>:你採納的建議裡,猜對了幾成?這把 proxy 佇列變成<b>會自我變準、可信任</b>的訊號,並讓你逐週看到趨勢。</p>
+<pre><code>vix queue-hit-rate [--min-resolved 5]   # 也自動併進 weakness-report(.md + .html)</code></pre>
+<ul>
+  <li><b>誠實</b>:只算「<b>發出之後</b>才被裁決」的 id(之前的裁決不是這次建議的結果);只有<b>已解決</b>的 id 計入命中率(沒人動的不臆測);太少 → <code>樣本不足</code>旗標。</li>
+  <li><b>命中定義依佇列預測</b>:<code>hardneg</code>(預測「錯」)→ 被 reject/dismiss 才算中;<code>bank hard-positive</code>(預測「defect」)→ 被 confirm 才算中;<code>label</code> 佇列 → 任何裁決都算「被採納」(命中率=採納率)。</li>
+  <li><b>趨勢</b>:逐次發出的命中率序列 —— 上升 = 佇列越來越準,你越該跟著它標。</li>
+</ul>
+<div class="warn">這是「放大步 #1」的 v1:測量 + 趨勢 + 併進報告(零額外儀式,你本來就會開 weakness-report)。把命中率<b>實際回授去重排下一輪佇列</b>(低命中率佇列降權)是後續;目前先讓你看到、可信任。需要 <code>resolve</code>/<code>dismiss</code> 裁決才有訊號。</div>
 
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>

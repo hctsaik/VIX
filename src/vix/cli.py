@@ -283,6 +283,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sae.add_argument("--save", action="store_true", help="persist embed_projection.npz + adapt_report.json")
     sae.add_argument("--enable", action="store_true", help="enable the projection for ranking (error-mine) — only takes effect if the gate says GO")
     sae.add_argument("--max-pca", type=int, default=64)
+    sqhr = sub.add_parser("queue-hit-rate", help="did VIX's suggestion queues turn out right? join past emissions with human resolutions -> per-queue precision + trend (self-calibration)")
+    sqhr.add_argument("--min-resolved", type=int, default=5)
     sba = sub.add_parser("bank-audit", help="multi-bank Top-K embedding audit of low-conf proposals -> defect/reflection/unknown (advisory)")
     sba.add_argument("--defect-tag", default="golden")
     sba.add_argument("--reflection-tag", default="rejected")
@@ -727,6 +729,7 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"{r['id']}  closeness={r['closeness']}  {r['why']}")
         if not ranked:
             print("無候選(需先 eval-ingest,且未標註候選需有 embedding)")
+        pipeline._log_queue(cfg, "error_mine", [r["id"] for r in ranked], "label")  # for queue-hit-rate
 
     elif args.cmd == "set-eval-baseline":
         protected = {c: args.protect_drop for c in args.protect}
@@ -748,6 +751,7 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"  {row['id']}  {row.get('pred_class')}  wrongness={row['wrongness']}  {row['why']}")
         if not r["rows"]:
             print("  無(GT 模式需先 eval-ingest;GT-free 需 calibrate 且有未標註偵測)")
+        pipeline._log_queue(cfg, "hardneg", [row["id"] for row in r["rows"]], "wrong")  # for queue-hit-rate
 
     elif args.cmd == "weakness-report":
         r = pipeline.weakness_report(adapter, cfg, top_classes=args.top_classes,
@@ -797,6 +801,19 @@ def _main(argv: list[str] | None = None) -> int:
                   f"(bank={row['winning_bank']}, margin={row['margin']})")
         print("注:bank_verdict 為諮詢欄位(不覆寫 route);defect_like/unknown 已標 hard_positive"
               "(人工 resolve→golden,不自動晉升)")
+        pipeline._log_queue(cfg, "bank_hardpos",  # for queue-hit-rate (predict: these are defects)
+                            [row["id"] for row in r["results"] if row.get("verdict") in ("defect_like", "unknown")], "defect")
+
+    elif args.cmd == "queue-hit-rate":
+        r = pipeline.queue_hit_rate(cfg, min_resolved=args.min_resolved)
+        print(f"佇列命中率({r['n_emissions']} 次發出,{r['n_resolutions']} 次裁決):")
+        for q in r["queues"]:
+            prec = "-" if q["precision"] is None else q["precision"]
+            note = " [樣本不足僅供參考]" if q["insufficient"] else ""
+            print(f"  {q['queue']}(預測={q['predict']}): 命中率 {prec}  已解決 {q['resolved']}/{q['emitted']}  趨勢 {q['trend']}{note}")
+        if not r["queues"]:
+            print("  無資料(先跑 error-mine/hardneg/weakness-report 發出佇列,並有 resolve/dismiss 裁決)")
+        print("  註:只算『已解決』的 id(誠實);label 佇列命中率=被採納率;趨勢上升=佇列越來越準")
 
     return 0
 

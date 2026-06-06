@@ -25,7 +25,8 @@
 `tests/test_weakness_report_gui.py`(**Playwright** 開 headless Chromium 載入真實 `weakness_report.html`,斷言一致性表格 + `taxonomy` 判定 + 樣式化判定格 + PROXY 標記在瀏覽器中渲染)。全套綠。
 
 ## 放大價值的下一步(優先序)
-1. **佇列命中率回饋飛輪**:把「上週佇列 N% 命中、趨勢」回饋進下一輪排序 → 會自我變準的策展(實戰派的「不可或缺」鍵)。**(尚未做)**
+1. **佇列命中率回饋飛輪** —— ✅ **已實作 v1**:`vix queue-hit-rate` 把過去的建議佇列(error-mine/hardneg/weakness/bank-hardpos)join 後來的人工裁決 → 逐佇列**命中率 + 覆蓋 + 趨勢**,併進 weakness-report。誠實:只算「發出後才被裁決」且「已解決」的 id;命中定義依佇列預測(wrong→reject 算中、defect→confirm 算中、label→被採納)。檔案 `core/queue_metrics.py`、`pipeline.{_log_queue,queue_hit_rate}`、CLI;測試 `tests/test_queue_hit_rate.py`。**待:把命中率實際回授去重排下一輪佇列(低命中降權)** —— 目前是測量+趨勢+顯示。
+   - 套用投影到**全 stack** 的另一半(routing/threshold/bank-audit 在投影空間重校準)仍待(見 #2 邊界)。
 2. **領域自適應 embedding**(最大槓桿)—— ✅ **已實作 v1**:用 golden GT 在凍結 DINO 上學正規化 LDA 投影(PCA 預降維 + shrinkage,閉式、秒級、$0、**非訓練 YOLO**)。`vix adapt-embedding` 逐對報告**凍結→投影**可分性(**k-fold CV**,投影只在 train fold fit,防過擬合),標記 **rescued**(凍結不可分 → 投影後可分 = 表徵問題、可修,非 taxonomy 死路);`--save` 持久化 `embed_projection.npz`。檔案 `core/embed_adapt.py`、`pipeline.adapt_embedding`、CLI;測試 `tests/test_embed_adapt.py`(救回 noise-swamped 對、CV 不假性救回真不可分對、save/load、pipeline)。
    - **此 v1 的邊界**:投影目前是**診斷 + 已存 artifact**;把它**套用到全 stack**(routing/bank-audit/error-mine 在投影空間重校準閾值)是下一步——需經 gate/eval 驗證不退步才打開。DINO 768 維、golden 少時 PCA 可能丟低變異判別方向(shrinkage 緩解)。
 3. **去風險檢查**:出強勢「停止標註」措辭前,對被判不可分的對做一次離線「真的訓個小偵測器看分不分得開」sanity check。註:`adapt-embedding` 的 CV rescued 旗標已是這個檢查的**離線、零標註版本**(LDA 投影代替小偵測器)。
