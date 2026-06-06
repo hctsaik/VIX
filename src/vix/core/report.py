@@ -80,7 +80,8 @@ def render_markdown(report: dict) -> str:
         f"# VIX 資料集健檢報告 — {report.get('version', '')}",
         f"_generated: {report['generated_at']}_",
         "",
-        f"## 資料集品質分數: **{report.get('quality_score', 0)} / 100**"
+        f"## 資料集品質分數: **{report.get('quality_score', 0)} / 100** "
+        f"<sub>(非校準的 triage 啟發式加權檢查;正式 go/no-go 以下方 gate 放行建議為準)</sub>"
         + (f"  |  放行建議: **{report['gate_verdict']}**" if report.get("gate_verdict") else ""),
         "",
         f"- 影像總數: **{report['total_images']}**",

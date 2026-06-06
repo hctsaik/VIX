@@ -123,6 +123,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sd = sub.add_parser("dedup", help="find near-duplicate image groups")
     sd.add_argument("--max-distance", type=float, default=0.05)
+    sd.add_argument("--full", action="store_true", help="list every member hash (default: count + first few)")
 
     scov = sub.add_parser("coverage", help="class distribution + coverage gaps (+need X more)")
     scov.add_argument("--target", type=int, default=None, help="absolute per-class target count")
@@ -356,9 +357,13 @@ def _main(argv: list[str] | None = None) -> int:
     elif args.cmd == "dedup":
         groups = pipeline.dedup(adapter, cfg, args.max_distance)
         for g in groups:
-            print("dup group:", ", ".join(g))
-        print(f"{len(groups)} near-duplicate groups")
-        print("注:資料量 >~2000 自動切換 LSH(近似召回,非精確全對比);--adapter memory 用像素特徵,精度低於真實 DINOv2")
+            if args.full:
+                print(f"dup group ({len(g)}):", ", ".join(g))
+            else:
+                preview = ", ".join(g[:3]) + (f" …(+{len(g) - 3})" if len(g) > 3 else "")
+                print(f"dup group ({len(g)}): {preview}")
+        print(f"{len(groups)} near-duplicate groups ({sum(len(x) - 1 for x in groups)} redundant)")
+        print("注:>~2000 自動切換 LSH(近似召回);--adapter memory 用像素特徵精度較低;--full 列出所有雜湊")
 
     elif args.cmd == "coverage":
         cov = pipeline.coverage(adapter, cfg, target=args.target)
