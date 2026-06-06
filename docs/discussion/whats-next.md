@@ -33,7 +33,15 @@ VIX 對其 niche 大致 **feature-complete**;真正該做的是**修兩個讀碼
 - **[FLAGS]** VIX 在這批標的:suspected_label_issues=0(單一類別 → 結構上無跨類混淆,誠實)、near_duplicate_groups=2、coverage=2 群。
 - **[TRENDFIX]** 兩次不同 eval_set_hash → `eval_set_changed=True` → 每類方向箭頭withheld、印警告。
 
-**誠實侷限**:單類別資料使一致性/混淆歸因無用武之地(本就如此);pixel_fallback 非 DINOv2(離線無 GPU);無真 YOLO 推論 → 用 GT 當偵測,故未測模型弱點/mAP(待你提供權重 + held-out eval 才能跑「模型弱點」那半)。
+## DOGFOOD 進階:訓練一版真 YOLO 跑「模型弱點」那半(已完成)
+VIX 本身**不訓練**;這是使用者會做的**外部**訓練,用來產生 VIX 消費的預測。
+- `docs/examples/dogfood_train_yolo.py`:VOC→YOLO、deterministic 80/20(**532 train / 133 val**)、單類 pothole、YOLOv8n、CPU、12 epochs(~31 分)。結果 **mAP@0.5=0.754, P=0.80, R=0.64**(刻意不完美 → 有真 FP/FN 給 VIX 抓)。
+- `docs/examples/dogfood_eval_yolo.py`:把 best.pt 在 133 張 val 推論(conf≥0.05 以抓 FP)→ 建 `{gt,pred}` JSONL → **`vix eval-ingest` + `vix weakness-report`**。真實輸出:
+  - **mAP@0.5 = 0.7234**;`map_by_iou {0.5:0.7234, 0.75:0.5119}` → **loc_gap = 0.21**(框在高 IoU 變鬆=真定位弱點)。
+  - **FP 型態:background 369**(低門檻下過度預測=真誤報);**FN 型態:missed 37 / localization 21**(真漏報)。
+  - weakness-report:**health=AMBER**,最弱=pothole AP 0.7234;**15 個「自信卻錯」**(GT 證實的高信心誤報,最高 conf=0.83 的 background FP)——正是 VIX 要優先推給人覆核的盲點。
+- **結論**:VIX 確實能消費**真實訓練模型**的 eval,產出可行動的弱點(mAP/typed FP-FN/loc_gap/自信誤報),不需自己訓練。VIX 的 all-point AP(0.7234)與 ultralytics 報的 mAP50(0.754)略有差異(AP 計法/匹配不同)——誠實揭露,非 bug。
+- 侷限:單類別 → 一致性/混淆歸因(跨類)無用武之地(本就如此);pixel_fallback 非 DINOv2(離線無 GPU,不影響 eval 指標)。
 
-## 下一步(需你的)
-要量「VIX 對模型有沒有幫助」,需 YOLO 權重 + held-out eval set:`vix infer --weights yolo.pt` → `vix eval-ingest <val.jsonl>` → `vix weakness-report`,即可得真實 per-class AP/弱點/一致性歸因。
+## 下一步(可選)
+你自己的真資料只要有 YOLO 權重 + held-out eval set,同一條流程即可:`vix infer --weights <yolo.pt>` → `vix eval-ingest <val.jsonl>` → `vix weakness-report`,得真實 per-class AP/弱點/一致性歸因。

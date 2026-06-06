@@ -26,3 +26,8 @@ golden_*.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# dogfood YOLO training artifacts (not committed)
+_dogfood_yolo/
+_dogfood_yolo_train.log
+yolov8n.pt
