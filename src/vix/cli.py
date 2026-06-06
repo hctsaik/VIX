@@ -277,6 +277,7 @@ def _build_parser() -> argparse.ArgumentParser:
     swr.add_argument("--top-classes", type=int, default=5)
     swr.add_argument("--queue-per-class", type=int, default=10)
     swr.add_argument("--out", default=None)
+    swr.add_argument("--worklist", action="store_true", help="also tag worklist samples (vixq:*) so the FiftyOne App can filter them; weakness_worklist.csv is always written")
     scon = sub.add_parser("consistency", help="GT x embedding attribution: per class-pair separability + confusion-overlap 2x2 (taxonomy/model/label_noise) — advisory, CI-gated")
     scon.add_argument("--max-pairs", type=int, default=20)
     sae = sub.add_parser("adapt-embedding", help="learn a supervised LDA projection of frozen DINOv2 from golden GT; report which 'inseparable' pairs become separable (CV'd) — offline, not YOLO training")
@@ -755,14 +756,14 @@ def _main(argv: list[str] | None = None) -> int:
 
     elif args.cmd == "weakness-report":
         r = pipeline.weakness_report(adapter, cfg, top_classes=args.top_classes,
-                                     queue_per_class=args.queue_per_class, out_path=args.out)
-        d = r["data"]
-        print(f"YOLO 弱點報告({d['mode']} 模式)-> {r['path']}")
+                                     queue_per_class=args.queue_per_class, out_path=args.out, worklist=args.worklist)
+        d = r["data"]; s = d.get("summary", {})
+        print(f"YOLO 弱點報告 [健康度 {s.get('health')}]({d['mode']} 模式)-> {r['path']}")
         if d.get("mAP") is not None:
-            print(f"  mAP@0.5={d['mAP']}  loc_gap={d.get('loc_gap')}")
-        for row in d["per_class"][:args.top_classes]:
-            print(f"  弱類 {row['cls']}: AP={row['ap']} 漏報型態={row.get('dom_fn_type') or '-'} "
-                  f"佇列={len(d['queue'].get(row['cls'], []))} 候選")
+            print(f"  mAP@0.5={d['mAP']}  最弱={s.get('weakest')}")
+        if s.get("todo"):
+            print("  現在做這個:" + " ｜ ".join(s["todo"]))
+        print(f"  工作清單 -> {r['worklist_csv']}" + ("(已 tag vixq:* 供 App 篩選)" if args.worklist else ""))
         print("  註:未重訓 → 佇列是 PROXY 優先排序,非實測 mAP 增益")
 
     elif args.cmd == "consistency":

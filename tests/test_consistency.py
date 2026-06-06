@@ -50,11 +50,26 @@ def test_verdict_model_separable_but_confused():
     assert pair["verdict"] == "model" and pair["separable_in_embedding"] == "yes"
 
 
-def test_verdict_label_noise_overlap_without_confusion():
-    # overlapping embeddings but model does NOT confuse them -> label-noise (re-adjudicate)
-    f = consistency_findings({"a": _OVL_A, "b": _OVL_B}, confusion={}, n_gt={"a": 20, "b": 20})
+def test_verdict_label_noise_requires_confusion_and_inseparable():
+    # overlapping (inseparable) embeddings + SOME sub-threshold model confusion -> label_noise
+    f = consistency_findings({"a": _OVL_A, "b": _OVL_B}, confusion={"a->b": 1}, n_gt={"a": 20, "b": 20})
     pair = next(x for x in f if set(x["pair"]) == {"a", "b"})
     assert pair["verdict"] == "label_noise"
+
+
+def test_separable_pair_with_no_confusion_is_clean_not_label_noise():
+    # THE BUG FIX: a cleanly-separable, never-confused pair must NOT be label_noise (was an artifact
+    # of mean-O over-counting overlap under noise). With no confusion there's nothing to attribute.
+    f = consistency_findings({"a": _SEP_A, "b": _SEP_B}, confusion={}, n_gt={"a": 20, "b": 20})
+    # clean pairs are filtered from the actionable report -> the a/b pair must not appear as label_noise
+    assert all(x["verdict"] != "label_noise" for x in f)
+
+
+def test_inseparable_pair_without_confusion_is_watch_not_label_noise():
+    # overlapping embeddings but ZERO model confusion -> can't claim "labels disagree" -> watch
+    f = consistency_findings({"a": _OVL_A, "b": _OVL_B}, confusion={}, n_gt={"a": 20, "b": 20})
+    pair = next(x for x in f if set(x["pair"]) == {"a", "b"})
+    assert pair["verdict"] == "taxonomy_watch"
 
 
 def test_representation_fixable_overrides_taxonomy_when_rescued():

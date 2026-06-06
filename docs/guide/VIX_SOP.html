@@ -439,13 +439,15 @@ vix set-eval-baseline --protect bubble --protect-drop 0.05 --map-drop 0.02
 </ul>
 
 <h3>weakness-report — 一張「哪裡弱 / 去標這些」報告</h3>
-<pre><code>vix weakness-report --top-classes 5 --queue-per-class 10   # 產出 weakness_report.md</code></pre>
-<p>把 VIX 已算的模型驗證訊號滾成一份人讀 Markdown。<b>兩模式</b>:</p>
+<pre><code>vix weakness-report --top-classes 5 --queue-per-class 10   # 產出 weakness_report.md + .html + weakness_worklist.csv
+vix weakness-report --worklist                              # 另把佇列樣本打 vixq:* tag,供 FiftyOne App 篩選</code></pre>
+<p>把 VIX 已算的模型驗證訊號滾成一份人讀 Markdown/HTML。<b>頂端 TL;DR</b>:健康度(RED/AMBER/GREEN)+ 最弱類別 + 「現在做這個」一行。範例見 <a href="../examples/weakness_report.html">docs/examples/weakness_report.html</a>。<b>兩模式</b>:</p>
 <table>
   <tr><th>區塊</th><th>內容</th><th>需要</th></tr>
-  <tr><td>GT 區塊(主)</td><td>per-class AP(弱→強)、混淆、FP/FN 分型、loc_gap、<b>自信卻錯</b>清單</td><td>有標註 val set(<code>eval-ingest</code>)</td></tr>
+  <tr><td>GT 區塊(主)</td><td>per-class AP(弱→強)+ <b>漏報型態分佈</b>、混淆、loc_gap(N/A 與 0 區分)、<b>自信卻錯</b>清單</td><td>有標註 val set(<code>eval-ingest</code>)</td></tr>
+  <tr><td>一致性歸因</td><td>每對:可分性 + O/C/Δ <b>皆附信賴區間 + n_gt 分母</b> → taxonomy/model/label_noise</td><td>≥2 類 golden(+eval 才能歸因)</td></tr>
   <tr><td>GT-free 區塊</td><td>嵌入翻盤(hardneg gt_free)</td><td>已 <code>calibrate</code>;未標註新資料也能跑</td></tr>
-  <tr><td><b>逐弱類佇列</b></td><td>每個弱類:「去標這些」候選(class-aware <code>error-mine</code>,只比該類失敗處)</td><td>有 val set 撈出該類誤差框</td></tr>
+  <tr><td><b>逐弱類佇列</b></td><td>每個弱類「去標這些」候選(class-aware <code>error-mine</code>)+ <b>該佇列歷史命中率</b>就近顯示;完整清單匯出 <code>weakness_worklist.csv</code></td><td>有 val set 撈出該類誤差框</td></tr>
 </table>
 <div class="warn"><b>誠實邊界:</b>不重訓 = <b>沒有證明,只有代理</b>。佇列是「最該標的<b>嫌疑/優先排序</b>」(靠近已證實誤差 / 自信翻盤),<b>不是</b>「標了 mAP 一定漲」。報告全程標 <code>PROXY</code>。要證明某批資料確實有效,得<b>外部重訓一次</b>再用 <code>eval-ingest</code> + <code>challenge-guard</code> 量逐類 mAP delta。<code>bank_audit</code> 已涵蓋「低信心但像 defect」的漏檢撈回(<code>HARD_POSITIVE</code>),故未另搬 SAFE 的 hardpos。</div>
 

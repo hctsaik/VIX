@@ -20,19 +20,32 @@ _PROXY = "_(PROXY:未重訓,此為嫌疑/優先排序,非實測 mAP 增益)_"
 def render_weakness_report(data: dict) -> str:
     mode = data.get("mode", "gt_free")
     L: list[str] = ["# YOLO 弱點報告\n"]
+    s = data.get("summary") or {}
+    if s:  # TL;DR: 10-second "where is it weak / do this now"
+        L.append(f"> **健康度:{s.get('health', '?')}** ｜ 最弱:{s.get('weakest') or '-'}")
+        if s.get("todo"):
+            L.append(">\n> **現在做這個:** " + " ｜ ".join(s["todo"]))
+        L.append("")
+    L.append(f"_{_PROXY.strip('_')}(未重訓 → 排序為嫌疑/優先,非實測 mAP;可分性綁定目前 embedding 空間。)_\n")
     L.append("模式:**%s** %s\n" % (
         mode, "(有標註 val set → 以 GT 區塊為主)" if mode == "gt" else "(GT-free → 靠嵌入翻盤/代理訊號)"))
     if data.get("mAP") is not None:
-        loc = data.get("loc_gap")
-        L.append("- **mAP@0.5 = %s**%s\n" % (data["mAP"], f"　定位尾巴 loc_gap = {loc}(框越鬆越大)" if loc else ""))
+        loc, mbi = data.get("loc_gap"), data.get("map_by_iou")
+        if loc is not None:
+            extra = f"　定位尾巴 loc_gap = {loc}" + (f"(mAP@0.5={mbi.get('0.5')} vs @0.75={mbi.get('0.75')};越大=框越鬆)" if mbi else "")
+        else:
+            extra = "　(loc_gap N/A:eval 為單一 IoU,未評估定位)"
+        L.append(f"- **mAP@0.5 = {data['mAP']}**{extra}\n")
 
     pc = data.get("per_class") or []
     if pc:
         L.append("\n## 哪一類最弱(per-class AP,弱 → 強)\n")
-        L.append("| 類別 | AP | n_gt | 主要漏報型態 | 最常混淆成 |")
+        L.append("| 類別 | AP | n_gt | 漏報型態(分佈) | 最常混淆成 |")
         L.append("|---|---|---|---|---|")
         for r in pc:
-            L.append(f"| {r['cls']} | {r['ap']} | {r['n_gt']} | {r.get('dom_fn_type') or '-'} | {r.get('top_confusion') or '-'} |")
+            fnt = r.get("fn_types") or {}
+            fn_s = " / ".join(f"{n} {t}" for t, n in sorted(fnt.items(), key=lambda kv: -kv[1])) or "-"
+            L.append(f"| {r['cls']} | {r['ap']} | {r['n_gt']} | {fn_s} | {r.get('top_confusion') or '-'} |")
         L.append("")
 
     conf = data.get("confusion") or []
@@ -54,7 +67,7 @@ def render_weakness_report(data: dict) -> str:
     ov = data.get("overturns") or []
     if ov:
         L.append("\n## 自信但嵌入翻盤(無 GT,適用未標註新資料)\n")
-        L.append("YOLO 高信心、但 DINOv2 嵌入判定離該類太遠 → 疑似自信誤報。" + _PROXY)
+        L.append("YOLO 高信心、但 DINOv2 嵌入判定離該類太遠 → 疑似自信誤報。")
         L.append("| 影像 | 類別 | conf | knn_dist | dist_thr | wrongness |")
         L.append("|---|---|---|---|---|---|")
         for r in ov:
@@ -64,7 +77,12 @@ def render_weakness_report(data: dict) -> str:
     q = data.get("queue") or {}
     if q:
         L.append("\n## 該標哪些(逐弱類「去標這些」佇列)\n")
-        L.append("每個弱類,列出未標註資料中最接近該類失敗處的候選。" + _PROXY)
+        L.append("每個弱類,列出未標註資料中最接近該類失敗處的候選(完整清單見 `weakness_worklist.csv`)。")
+        hr_wq = next((h for h in (data.get("hit_rate") or []) if h["queue"] == "weakness_queue"), None)
+        if hr_wq:  # show THIS queue's track record right where it's used (not buried at the bottom)
+            prec = "-" if hr_wq["precision"] is None else hr_wq["precision"]
+            note = "(樣本不足,尚不可信)" if hr_wq.get("insufficient") else ""
+            L.append(f"_此佇列歷史命中率:{prec}(已解決 {hr_wq['resolved']}/{hr_wq['emitted']}){note}_")
         for c, cands in q.items():
             L.append(f"- **{c}**: " + ", ".join(f"{x['id']}({x['closeness']})" for x in cands))
         L.append("")
@@ -72,16 +90,18 @@ def render_weakness_report(data: dict) -> str:
     cons = data.get("consistency") or []
     if cons:
         L.append("\n## 一致性歸因(GT × 嵌入:這個失敗是 taxonomy / model / label 問題?)\n")
-        L.append("每個易混類別對:在 embedding 空間可不可分、模型混淆多少、成因。" + _PROXY)
-        L.append("| 類別對 | 可分(embedding) | sep_err [CI] | O[i→j] | C[i→j] | 判定 | 支撐 | 建議 |")
-        L.append("|---|---|---|---|---|---|---|---|")
+        L.append("每個易混類別對:在 embedding 空間可不可分、模型混淆多少、成因。")
+        L.append("| 類別對 | 可分 | sep_err [CI] | O[i→j] [CI] | C[i→j] [CI] (n_gt) | Δ=O−C [CI] | 判定 | 支撐 | 建議 |")
+        L.append("|---|---|---|---|---|---|---|---|---|")
         for f in cons:
             pair = f"{f['pair'][0]}↔{f['pair'][1]}"
-            sep = f"{f['sep_err']} {f.get('sep_ci')}"
-            o = f.get("O_ij"); c = f.get("C_ij")
+            o = f"{f.get('O_ij')} {f.get('O_ci')}"
+            c = (f"{f['C_ij']} {f.get('C_ci')} (n={f['support'].get('n_gt_i')})" if f.get("C_ij") is not None else "-")
+            dlt = f"{f['delta']} {f.get('delta_ci')}" if f.get("delta") is not None else "-"
             sup = f"g{f['support']['golden_i']}/{f['support']['golden_j']} ({f['tier']})"
-            L.append(f"| {pair} | {f['separable_in_embedding']} | {sep} | {o} | {c if c is not None else '-'} "
-                     f"| **{f['verdict']}** | {sup} | {f['action']} |")
+            v = f"**{f['verdict']}**" + ("(可修)" if f.get("representation_fixable") else "")
+            L.append(f"| {pair} | {f['separable_in_embedding']} | {f['sep_err']} {f.get('sep_ci')} | {o} | {c} "
+                     f"| {dlt} | {v} | {sup} | {f['action']} |")
         L.append("")
 
     hr = data.get("hit_rate") or []
@@ -120,33 +140,51 @@ def render_weakness_report_html(data: dict) -> str:
          "th{background:#f5f5f7}.v{font-weight:700}.proxy{color:#a15c00;background:#fff8e6;padding:8px;border-radius:6px;font-size:12px}",
          ".tax{color:#b00020}.model{color:#0064b0}.label_noise{color:#7a00b0}.clean{color:#2e7d32}",
          "</style></head><body>"]
+    loc, mbi = data.get("loc_gap"), data.get("map_by_iou")
+    loc_html = ""
+    if data.get("mAP") is not None:
+        if loc is not None:
+            loc_html = f" ｜ loc_gap = {_esc(loc)}" + (f" (mAP@0.5={_esc(mbi.get('0.5'))} vs @0.75={_esc(mbi.get('0.75'))})" if mbi else "")
+        else:
+            loc_html = " ｜ loc_gap N/A(單一 IoU,未評估定位)"
     h.append(f"<h1>YOLO 弱點報告</h1><p>模式:<b>{_esc(mode)}</b>"
-             + (f" ｜ mAP@0.5 = <b>{_esc(data['mAP'])}</b>" if data.get("mAP") is not None else "")
-             + (f" ｜ loc_gap = {_esc(data.get('loc_gap'))}" if data.get("loc_gap") else "") + "</p>")
+             + (f" ｜ mAP@0.5 = <b>{_esc(data['mAP'])}</b>" if data.get("mAP") is not None else "") + loc_html + "</p>")
+    s = data.get("summary") or {}
+    if s:  # TL;DR health banner
+        color = {"RED": "#b00020", "AMBER": "#a15c00", "GREEN": "#2e7d32"}.get(s.get("health"), "#555")
+        todo = " ｜ ".join(s.get("todo") or []) or "—"
+        h.append(f"<div id='tldr' style='border-left:5px solid {color};padding:8px 12px;margin:10px 0;background:#fafafa'>"
+                 f"<b style='color:{color}'>健康度:{_esc(s.get('health'))}</b> ｜ 最弱:{_esc(s.get('weakest') or '-')}"
+                 f"<br><b>現在做這個:</b> {_esc(todo)}</div>")
     h.append(f"<p class='proxy'>{_esc(_PROXY.strip('_'))}(未重訓 → 排序為嫌疑/優先,非實測 mAP;可分性綁定目前 embedding 空間。)</p>")
 
     pc = data.get("per_class") or []
     if pc:
         h.append("<h2 id='per-class'>哪一類最弱(per-class AP,弱→強)</h2>")
-        h.append("<table><tr><th>類別</th><th>AP</th><th>n_gt</th><th>主要漏報型態</th><th>最常混淆成</th></tr>")
+        h.append("<table><tr><th>類別</th><th>AP</th><th>n_gt</th><th>漏報型態(分佈)</th><th>最常混淆成</th></tr>")
         for r in pc:
+            fnt = r.get("fn_types") or {}
+            fn_s = " / ".join(f"{n} {t}" for t, n in sorted(fnt.items(), key=lambda kv: -kv[1])) or "-"
             h.append(f"<tr><td>{_esc(r['cls'])}</td><td>{_esc(r['ap'])}</td><td>{_esc(r['n_gt'])}</td>"
-                     f"<td>{_esc(r.get('dom_fn_type') or '-')}</td><td>{_esc(r.get('top_confusion') or '-')}</td></tr>")
+                     f"<td>{_esc(fn_s)}</td><td>{_esc(r.get('top_confusion') or '-')}</td></tr>")
         h.append("</table>")
 
     cons = data.get("consistency") or []
     h.append("<h2 id='consistency'>一致性歸因(GT × 嵌入:taxonomy / model / label?)</h2>")
     if cons:
-        h.append("<table id='consistency-table'><tr><th>類別對</th><th>可分(embedding)</th><th>sep_err [CI]</th>"
-                 "<th>O[i→j]</th><th>C[i→j]</th><th>判定</th><th>支撐</th><th>建議</th></tr>")
+        h.append("<table id='consistency-table'><tr><th>類別對</th><th>可分</th><th>sep_err [CI]</th>"
+                 "<th>O[i→j] [CI]</th><th>C[i→j] [CI] (n_gt)</th><th>Δ=O−C [CI]</th><th>判定</th><th>支撐</th><th>建議</th></tr>")
         for f in cons:
             pair = f"{f['pair'][0]}↔{f['pair'][1]}"
             sup = f"g{f['support']['golden_i']}/{f['support']['golden_j']} ({f['tier']})"
             cls = {"taxonomy": "tax", "model": "model", "label_noise": "label_noise", "clean": "clean"}.get(f["verdict"], "")
+            o = f"{f.get('O_ij')} {f.get('O_ci')}"
+            c = (f"{f['C_ij']} {f.get('C_ci')} (n={f['support'].get('n_gt_i')})" if f.get("C_ij") is not None else "-")
+            dlt = f"{f['delta']} {f.get('delta_ci')}" if f.get("delta") is not None else "-"
+            vtxt = f["verdict"] + ("(可修)" if f.get("representation_fixable") else "")
             h.append(f"<tr><td>{_esc(pair)}</td><td>{_esc(f['separable_in_embedding'])}</td>"
-                     f"<td>{_esc(f['sep_err'])} {_esc(f.get('sep_ci'))}</td><td>{_esc(f.get('O_ij'))}</td>"
-                     f"<td>{_esc(f.get('C_ij') if f.get('C_ij') is not None else '-')}</td>"
-                     f"<td class='v {cls}'>{_esc(f['verdict'])}</td><td>{_esc(sup)}</td><td>{_esc(f['action'])}</td></tr>")
+                     f"<td>{_esc(f['sep_err'])} {_esc(f.get('sep_ci'))}</td><td>{_esc(o)}</td><td>{_esc(c)}</td>"
+                     f"<td>{_esc(dlt)}</td><td class='v {cls}'>{_esc(vtxt)}</td><td>{_esc(sup)}</td><td>{_esc(f['action'])}</td></tr>")
         h.append("</table>")
     else:
         h.append("<p>(無一致性發現:需 ≥2 類 golden;接 eval-ingest 才能歸因 taxonomy/model/label。)</p>")
@@ -162,7 +200,12 @@ def render_weakness_report_html(data: dict) -> str:
 
     q = data.get("queue") or {}
     if q:
-        h.append("<h2 id='queue'>該標哪些(逐弱類佇列,PROXY)</h2><ul>")
+        hr_wq = next((hh for hh in (data.get("hit_rate") or []) if hh["queue"] == "weakness_queue"), None)
+        wq_note = ""
+        if hr_wq:
+            prec = "-" if hr_wq["precision"] is None else hr_wq["precision"]
+            wq_note = f"｜歷史命中率 {prec}(已解決 {hr_wq['resolved']}/{hr_wq['emitted']}{',樣本不足' if hr_wq.get('insufficient') else ''})"
+        h.append(f"<h2 id='queue'>該標哪些(逐弱類佇列,PROXY)</h2><p>完整清單見 weakness_worklist.csv {_esc(wq_note)}</p><ul>")
         for c, cands in q.items():
             h.append(f"<li><b>{_esc(c)}</b>: " + ", ".join(f"{_esc(x['id'])}({_esc(x['closeness'])})" for x in cands) + "</li>")
         h.append("</ul>")

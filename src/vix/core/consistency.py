@@ -132,9 +132,9 @@ def _attribute(li: str, lj: str, *, ni: int, nj: int, k: int, sep_err: float, se
     f["delta"], f["delta_ci"] = round(d, 4), d_ci
     zero_in = d_ci[0] <= 0 <= d_ci[1]
     c_hi, o_hi = C >= tau, O >= tau
-    if not c_hi and not o_hi:
-        f.update(verdict="clean", action="無顯著混淆/重疊")
-    elif c_hi and o_hi and zero_in:
+    has_conf = c_cnt > 0            # the model actually confused i->j at least once
+    inseparable = sep_err > SEP_INSEPARABLE  # robust (majority-vote) overlap signal, not the mean O
+    if c_hi and o_hi and zero_in:
         if tier == "provisional":
             f.update(verdict="taxonomy_watch", action="重疊與混淆一致但支撐不足:僅監看,勿 merge")
         else:
@@ -142,10 +142,19 @@ def _attribute(li: str, lj: str, *, ni: int, nj: int, k: int, sep_err: float, se
                      action=f"在目前 embedding 空間 {li}/{lj} 難分且模型同步混淆 → 停止多標;考慮 merge 或重寫判別規則(先看例圖)")
     elif c_hi and not o_hi and d_ci[1] < 0:
         f.update(verdict="model", action=f"{li}/{lj} 可分但模型混淆 → 沿邊界補硬負樣本/資料(標註是對的槓桿)")
-    elif o_hi and not c_hi and d_ci[0] > 0:
-        f.update(verdict="label_noise", action=f"嵌入聚在一起但標籤分歧 → 重新裁決 {li}/{lj} 並寫下規則(勿 merge、勿多標)")
+    # label_noise requires POSITIVE model confusion (c_cnt>0) AND genuine embedding entanglement
+    # (sep_err inseparable) — without confusion there is no model-vs-label disagreement to attribute,
+    # and the mean O alone over-counts overlap under noise on a majority-separable pair (the bug fix).
+    elif o_hi and not c_hi and d_ci[0] > 0 and has_conf and inseparable:
+        f.update(verdict="label_noise",
+                 action=f"嵌入難分且標籤分歧(模型偶混淆)→ 重新裁決 {li}/{lj} 並寫下規則(勿 merge、勿多標)")
+    elif not has_conf and not inseparable:
+        f.update(verdict="clean", action="可分且模型無混淆:無歸因需要")
+    elif not c_hi and not o_hi:
+        f.update(verdict="clean", action="無顯著混淆/重疊")
     else:
-        f.update(verdict="taxonomy_watch", action="訊號混合/方向未定:監看,勿做不可逆動作")
+        f.update(verdict="taxonomy_watch",
+                 action="訊號混合/證據不足:監看,勿做不可逆動作(無模型混淆時不可宣稱標籤雜訊)")
     return f
 
 

@@ -980,7 +980,7 @@ def hardneg(adapter, cfg, top=50, mode="auto"):
     return {"mode": "gt_free", "rows": rows}
 
 
-def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=None):
+def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=None, worklist=False):
     """Roll VIX's model-validated signals + hardneg + a per-weak-class label queue into ONE
     human-readable 'where YOLO is weak / go label these' Markdown report (model-loop-v2). Two-mode:
     GT block (per-class AP/confusion/loc_gap/FP-FN typing + confidently-wrong eval-FPs) when a val
@@ -997,6 +997,7 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
         ev = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
         data["mode"] = "gt"
         data["mAP"], data["loc_gap"] = ev.get("mAP"), ev.get("loc_gap")
+        data["map_by_iou"] = ev.get("map_by_iou")  # so the renderer can tell "0.0 (evaluated)" from "N/A"
         per_class_ap, n_gt = ev.get("per_class_ap", {}), ev.get("n_gt", {})
         confusion, fn_detail = ev.get("confusion", {}), ev.get("fn_detail", {})
         fn_types: dict[str, Counter] = {}  # dominant FN failure mode per class
@@ -1014,6 +1015,7 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
             cp = partner.get(c)
             rows.append({"cls": c, "ap": ap, "n_gt": n_gt.get(c, 0),
                          "dom_fn_type": (dom.most_common(1)[0][0] if dom else None),
+                         "fn_types": (dict(dom) if dom else {}),  # full breakdown, not just the top one
                          "top_confusion": (f"{cp[0]} ({cp[1]})" if cp else None)})
         rows.sort(key=lambda r: r["ap"])  # weakest first
         data["per_class"] = rows
@@ -1043,17 +1045,69 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     _log_queue(cfg, "weakness_queue", [c["id"] for cands in data["queue"].values() for c in cands], "label")
     data["hit_rate"] = queue_hit_rate(cfg)["queues"]
 
+    # TL;DR health verdict + "do this now" (Tier 1: scannability)
+    worst = data["per_class"][0] if data["per_class"] else None
+    bad_consist = [f for f in data["consistency"]
+                   if f["verdict"] in ("taxonomy", "label_noise") and not f.get("representation_fixable")
+                   and f["tier"] == "supported"]
+    n_queue = sum(len(v) for v in data["queue"].values())
+    n_cw = len(data["confident_wrong"])
+    if (worst and worst["ap"] < 0.5) or bad_consist:
+        health = "RED"
+    elif (worst and worst["ap"] < 0.8) or n_cw or any(f["verdict"] == "taxonomy_watch" for f in data["consistency"]):
+        health = "AMBER"
+    else:
+        health = "GREEN"
+    todo = []
+    if bad_consist:
+        todo.append(f"重新檢視 {len(bad_consist)} 個類別對定義:" + ", ".join("↔".join(f["pair"]) for f in bad_consist))
+    if n_queue:
+        todo.append(f"標 {n_queue} 個候選(見佇列)")
+    if n_cw:
+        todo.append(f"覆核 {n_cw} 個自信誤報")
+    data["summary"] = {"health": health, "todo": todo,
+                       "weakest": (f"{worst['cls']} AP={worst['ap']} (n_gt={worst['n_gt']})" if worst else None)}
+
     out = Path(out_path or (cfg.workspace / "weakness_report.md"))
+
+    # worklist export (Tier 1: turn the report into a clearable list, not just a read)
+    import csv as _csv
+    wl_rows = [{"queue": f"label:{cls}", "class": cls, "vix_hash": c["id"], "reason": "近該類失敗處"}
+               for cls, cands in data["queue"].items() for c in cands]
+    wl_rows += [{"queue": "confident_wrong", "class": cw.get("pred_class"), "vix_hash": cw["id"],
+                 "reason": f"自信({cw['conf']}){cw.get('fp_type', '')} 誤報"} for cw in data["confident_wrong"]]
+    wl_path = out.with_name("weakness_worklist.csv")
+    with open(wl_path, "w", newline="", encoding="utf-8") as fc:
+        w = _csv.DictWriter(fc, fieldnames=["queue", "class", "vix_hash", "reason"])
+        w.writeheader()
+        w.writerows(wl_rows)
+    data["worklist_csv"] = str(wl_path)
+    if worklist:  # opt-in: tag the worklist samples so the FiftyOne App can filter/build saved views
+        for cls, cands in data["queue"].items():
+            for c in cands:
+                try:
+                    adapter.apply_tags(c["id"], [f"vixq:label:{cls}"])
+                except Exception:  # noqa: BLE001 - id may not be a live sample (e.g. external eval hash)
+                    pass
+        for cw in data["confident_wrong"]:
+            try:
+                adapter.apply_tags(cw["id"], ["vixq:confident_wrong"])
+            except Exception:  # noqa: BLE001
+                pass
+
     out.write_text(render_weakness_report(data), encoding="utf-8")
     html_out = out.with_suffix(".html")  # browsable surface (Playwright-verifiable)
     html_out.write_text(render_weakness_report_html(data), encoding="utf-8")
     DecisionLog(cfg.decision_log_path).append(
-        "weakness_report", decision=data["mode"],
-        extra={"mAP": data["mAP"], "weak_classes": [r["cls"] for r in data["per_class"][:top_classes]],
+        "weakness_report", decision=data["summary"]["health"],
+        extra={"mAP": data["mAP"], "health": data["summary"]["health"],
+               "weak_classes": [r["cls"] for r in data["per_class"][:top_classes]],
                "consistency": [f["verdict"] for f in data["consistency"]][:10],
+               "worklist_n": len(wl_rows), "tagged": bool(worklist),
                "note": "proxy: no retraining; rankings are suspicion/priority, not measured mAP gain"})
-    log.info("weakness_report: mode=%s -> %s (+%s)", data["mode"], out, html_out.name)
-    return {"path": str(out), "html": str(html_out), "data": data}
+    log.info("weakness_report: %s, mode=%s -> %s (+%s, worklist=%d)",
+             data["summary"]["health"], data["mode"], out, html_out.name, len(wl_rows))
+    return {"path": str(out), "html": str(html_out), "worklist_csv": str(wl_path), "data": data}
 
 
 def consistency(adapter, cfg, max_pairs=20):

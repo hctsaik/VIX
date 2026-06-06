@@ -56,3 +56,10 @@ def test_pipeline_weakness_report_gt_with_queue(tmp_path):
     assert (cfg.workspace / "weakness_report.md").exists()
     rec = [e for e in DecisionLog(cfg.decision_log_path).read_all() if e["event"] == "weakness_report"]
     assert rec and rec[0]["extra"]["weak_classes"][0] == "b"
+    # Tier 1: TL;DR health verdict + a clearable worklist CSV
+    assert d["summary"]["health"] == "RED" and d["summary"]["todo"]              # bubble-like AP 0 -> RED + actions
+    from pathlib import Path
+    wl = Path(r["worklist_csv"])
+    assert wl.exists()
+    body = wl.read_text(encoding="utf-8")
+    assert "vix_hash" in body and "c0" in body and "label:b" in body            # queue ids exported as a worklist

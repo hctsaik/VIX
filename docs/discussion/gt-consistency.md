@@ -30,3 +30,9 @@
 2. **領域自適應 embedding**(最大槓桿)—— ✅ **已實作 v1**:用 golden GT 在凍結 DINO 上學正規化 LDA 投影(PCA 預降維 + shrinkage,閉式、秒級、$0、**非訓練 YOLO**)。`vix adapt-embedding` 逐對報告**凍結→投影**可分性(**k-fold CV**,投影只在 train fold fit,防過擬合),標記 **rescued**(凍結不可分 → 投影後可分 = 表徵問題、可修,非 taxonomy 死路);`--save` 持久化 `embed_projection.npz`。檔案 `core/embed_adapt.py`、`pipeline.adapt_embedding`、CLI;測試 `tests/test_embed_adapt.py`(救回 noise-swamped 對、CV 不假性救回真不可分對、save/load、pipeline)。
    - **此 v1 的邊界**:投影目前是**診斷 + 已存 artifact**;把它**套用到全 stack**(routing/bank-audit/error-mine 在投影空間重校準閾值)是下一步——需經 gate/eval 驗證不退步才打開。DINO 768 維、golden 少時 PCA 可能丟低變異判別方向(shrinkage 緩解)。
 3. **去風險檢查**:出強勢「停止標註」措辭前,對被判不可分的對做一次離線「真的訓個小偵測器看分不分得開」sanity check。註:`adapt-embedding` 的 CV rescued 旗標已是這個檢查的**離線、零標註版本**(LDA 投影代替小偵測器)。
+
+## 報告強化(多代理批判 → Tier 0/1,已實作 + 測試)
+三輪多代理評 `weakness_report`(操作員 / data-centric / 產品三視角)後修正:
+- **Tier 0 正確性(修「說謊的」)**:① `label_noise` 守門 —— 沒有正向模型混淆(c_cnt>0)且 embedding 真難分(sep_err>0.35)就不歸因為標籤雜訊(原本會對「可分、從不混淆」的類別對誤判 label_noise,白導人力);C=0+可分 → `clean`。② 把已算的 **O/C/Δ 信賴區間 + n_gt 分母**渲染出來(原本只顯示點估計)。③ `loc_gap` 區分 **N/A(單一 IoU)vs 0**;附 `map_by_iou`。④ 漏報型態顯示**全分佈**(非 most_common(1))。
+- **Tier 1 可用性 + 行動化**:TL;DR 健康度(RED/AMBER/GREEN)+ 最弱類別 + 「現在做這個」;**`weakness_worklist.csv` 匯出**(把佇列從「讀」變「可清的清單」)+ `--worklist` 打 `vixq:*` tag 供 App 篩選;佇列旁就近顯示**歷史命中率**;PROXY 標記去重(頂部一次)。
+- 範例:`docs/examples/weakness_report.html`(+ `gen_weakness_report.py` 可重現)。仍待(Tier 2):FiftyOne App 面板、一致性判定接進 gate、報告版本化進 snapshot、hit-rate 回授重排佇列、批次範圍。
