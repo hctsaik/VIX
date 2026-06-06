@@ -35,6 +35,10 @@ VIX 是一個封閉的 embedding 世界 —— `route`/`gate`/`coverage`/`label-
 > **#2 box-qa**、**#7 challenge-guard**(把 mAP/受保護類別 AP 退步接進 gate 硬擋)均已落地,另修兩個帳本完整性 bug。
 > 設計與審查見 [model-loop-v2-design.md](model-loop-v2-design.md),操作見 SOP §B8。下方 #2/#7 條目保留作背景脈絡。
 
+> **更新(SAFE↔VIX merge 決策,已實作 + 測試):** 經三輪多代理辯論定案——**訓練不進 VIX**(太久),只從姊妹專案 SAFE 取兩件離線診斷能力:
+> **`hardneg`**(YOLO 最自信卻錯:GT eval-FP / GT-free 嵌入翻盤)+ **`weakness-report`**(兩模式「哪裡弱 / 去標這些」報告 + 逐弱類 class-aware `error-mine` 佇列)。
+> 不重訓 = 代理非證明。決策見 [safe-vix-merge.md](safe-vix-merge.md),操作見 SOP §B9。
+
 ### #2 逐框「框品質」QA `vix box-qa` ✅ 已實作
 逐張、逐框靜態檢查:**過鬆/過大框、退化框(w或h≈0)、貼邊截斷框、長寬比超出該類包絡**。
 - **→ mAP**:**標註框緊度是 mAP@0.5:0.95 的頭號天花板**。系統性鬆 10–15% 的框會教出鬆的先驗,在嚴格 IoU(0.75–0.95)大量丟分;退化框是 NaN/loss 爆衝來源;截斷框該設 ignore。

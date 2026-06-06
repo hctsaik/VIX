@@ -92,6 +92,7 @@
   <a href="#b6">B6. 進階診斷指令 <span class="r">參考</span></a>
   <a href="#b7">B7. 模型閉環:eval-ingest / bank-audit</a>
   <a href="#b8">B8. 模型閉環 v2:錯誤分型 / box-qa / challenge-guard</a>
+  <a href="#b9">B9. YOLO 弱點報告:hardneg / weakness-report</a>
   <h2>實戰 &amp; 附錄</h2>
   <a href="#scenario">C. 標準情境 SOP</a>
   <a href="#explore">D. 探索更多 / 排解</a>
@@ -421,6 +422,29 @@ vix set-eval-baseline --protect bubble --protect-drop 0.05 --map-drop 0.02
   <li><code>resolve --confirm --label X</code> 改標籤現在<b>可逆</b>:沿用 <code>relabel_changes.jsonl</code>,<code>vix relabel --rollback</code> 即可還原(原本只有 <code>relabel</code> 可逆)。</li>
 </ul>
 <div class="warn"><b>誠實注意(同 B7):</b>recall/mAP 只在<b>凍結、有標籤</b>的 eval set 上算數。錯誤分型與 box-qa 的<b>量測</b>(IoU/面積/長寬比)精確,但<b>分類</b>用固定 IoU band、是確定性 policy 而非語意真值;error-mine 在外部框比不到偵測時會退回整圖平均(已揭露)。</div>
+
+<!-- ============ B9 ============ -->
+<h2 class="sec" id="b9">B9. YOLO 弱點報告:<code>hardneg</code> / <code>weakness-report</code> <span class="tag vix">VIX 客製</span></h2>
+<p>目標:<b>離線</b>知道「YOLO 哪裡弱、該去標哪些資料」——<b>完全不重訓</b>(訓練留給外部)。源自姊妹專案 SAFE 的取捨見 <a href="../discussion/safe-vix-merge.md">safe-vix-merge.md</a>。</p>
+
+<h3>hardneg — 「最自信卻錯」挖掘</h3>
+<pre><code>vix hardneg [--mode auto|gt|gt_free] --top 50</code></pre>
+<p>自信的錯誤既最傷、也最便宜修。兩個模式(都離線、零推論):</p>
+<ul>
+  <li><b>GT 模式</b>(有 val set,<code>eval-ingest</code> 後):依 conf 排序<b>已被 GT 證實的誤報(eval-FP)</b> —— 最可靠的盲點清單。</li>
+  <li><b>GT-free 模式</b>(無標註也能跑):<code>conf ≥ conf_thr</code>(YOLO 有把握)但 <code>knn_dist &gt; dist_thr</code>(DINOv2 嵌入判定離該類太遠)→ <b>嵌入翻盤的自信誤報</b>,全部用 route 已存欄位算。</li>
+</ul>
+
+<h3>weakness-report — 一張「哪裡弱 / 去標這些」報告</h3>
+<pre><code>vix weakness-report --top-classes 5 --queue-per-class 10   # 產出 weakness_report.md</code></pre>
+<p>把 VIX 已算的模型驗證訊號滾成一份人讀 Markdown。<b>兩模式</b>:</p>
+<table>
+  <tr><th>區塊</th><th>內容</th><th>需要</th></tr>
+  <tr><td>GT 區塊(主)</td><td>per-class AP(弱→強)、混淆、FP/FN 分型、loc_gap、<b>自信卻錯</b>清單</td><td>有標註 val set(<code>eval-ingest</code>)</td></tr>
+  <tr><td>GT-free 區塊</td><td>嵌入翻盤(hardneg gt_free)</td><td>已 <code>calibrate</code>;未標註新資料也能跑</td></tr>
+  <tr><td><b>逐弱類佇列</b></td><td>每個弱類:「去標這些」候選(class-aware <code>error-mine</code>,只比該類失敗處)</td><td>有 val set 撈出該類誤差框</td></tr>
+</table>
+<div class="warn"><b>誠實邊界:</b>不重訓 = <b>沒有證明,只有代理</b>。佇列是「最該標的<b>嫌疑/優先排序</b>」(靠近已證實誤差 / 自信翻盤),<b>不是</b>「標了 mAP 一定漲」。報告全程標 <code>PROXY</code>。要證明某批資料確實有效,得<b>外部重訓一次</b>再用 <code>eval-ingest</code> + <code>challenge-guard</code> 量逐類 mAP delta。<code>bank_audit</code> 已涵蓋「低信心但像 defect」的漏檢撈回(<code>HARD_POSITIVE</code>),故未另搬 SAFE 的 hardpos。</div>
 
 <!-- ============ C ============ -->
 <h2 class="sec" id="scenario">C. 標準情境 SOP:「這批新資料能不能進訓練?」</h2>

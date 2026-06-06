@@ -776,7 +776,7 @@ def _match_box_emb(box, det_embs, thr):
     return best
 
 
-def error_mine(adapter, cfg, top=20, emb_match_iou=0.5, fn_match_iou=0.1):
+def error_mine(adapter, cfg, top=20, emb_match_iou=0.5, fn_match_iou=0.1, for_class=None):
     """Rank unlabeled candidates by closeness to the model's val FP/FN error *regions*, so
     labeling effort lands on the model's demonstrated failures (not just novelty).
 
@@ -785,30 +785,42 @@ def error_mine(adapter, cfg, top=20, emb_match_iou=0.5, fn_match_iou=0.1):
     the localization band). If an error image yields no matchable box (e.g. a pure `missed` FN,
     or external boxes that don't align), it falls back to that image's detection-mean embedding
     — strictly better than the old whole-error-set mean, and degrades cleanly on memory/pixel
-    fallback adapters (model-loop-v2 R1)."""
+    fallback adapters (model-loop-v2 R1).
+
+    ``for_class`` (model-loop-v2 weakness-report): restrict the error regions to ONE class's
+    boxes, so a weak class C yields "label these candidates nearest C's failures" rather than a
+    class-blind global pool. In class mode the image-mean fallback is disabled (it would re-dilute
+    class specificity); a class with too few matchable error boxes simply yields fewer candidates,
+    which the caller can widen with coverage/uncertainty."""
     p = cfg.eval_results_path
     if not p.exists():
         raise ValueError("尚無評估結果;請先執行 vix eval-ingest <results.json>")
     ev = json.loads(p.read_text(encoding="utf-8"))
     fp_detail, fn_detail = ev.get("fp_detail", {}), ev.get("fn_detail", {})
-    error_hashes = set(ev.get("fn_hashes", [])) | set(ev.get("fp_hashes", []))
+
+    def _keep(box):
+        return for_class is None or box.get("label") == for_class
+
+    if for_class is None:
+        error_hashes = set(ev.get("fn_hashes", [])) | set(ev.get("fp_hashes", []))
+    else:  # only images that actually have an error box of this class
+        error_hashes = {h for h, bs in fp_detail.items() if any(_keep(b) for b in bs)}
+        error_hashes |= {h for h, bs in fn_detail.items() if any(_keep(b) for b in bs)}
     samples = {h: dets for h, _s, dets, _t in adapter.samples()}
     err_emb, n_box, n_fallback = [], 0, 0
     for h in error_hashes:
         det_embs = [(d, np.asarray(d.embedding, float)) for d in (samples.get(h) or []) if d.embedding is not None]
         matched = []
         for box in fp_detail.get(h, []):  # FP regions are predictions -> match tightly
-            e = _match_box_emb(box["bbox"], det_embs, emb_match_iou)
-            if e is not None:
+            if _keep(box) and (e := _match_box_emb(box["bbox"], det_embs, emb_match_iou)) is not None:
                 matched.append(e)
         for box in fn_detail.get(h, []):  # FN regions -> the overlapping pred (looser, localization band)
-            e = _match_box_emb(box["bbox"], det_embs, fn_match_iou)
-            if e is not None:
+            if _keep(box) and (e := _match_box_emb(box["bbox"], det_embs, fn_match_iou)) is not None:
                 matched.append(e)
         if matched:
             err_emb.extend(matched)
             n_box += len(matched)
-        elif det_embs:  # no matchable error box -> image-level mean so the error image still counts
+        elif det_embs and for_class is None:  # global mode only: image-mean so the error image still counts
             err_emb.append(np.mean(np.vstack([e for _d, e in det_embs]), axis=0))
             n_fallback += 1
     if not err_emb:
@@ -866,6 +878,105 @@ def box_qa(adapter, cfg, top=50, min_support=8):  # T1c per-box geometry QA (rea
     issues = audit_boxes(records, min_support=min_support)
     log.info("box_qa: %d golden boxes audited, %d issues", len(records), len(issues))
     return issues[:top]
+
+
+def hardneg(adapter, cfg, top=50, mode="auto"):
+    """Confidently-wrong mining — the "YOLO most confident yet wrong" weakness lens (ported from SAFE).
+    mode 'auto': GT (confirmed eval-FPs ranked by conf) if eval_results.json has conf-bearing fp_detail,
+    else GT-free (high-conf detections the embedding overturns). 'gt'/'gt_free' force a mode.
+    Returns {mode, rows}. Everything is offline (no training/inference) — wrongness is a PROXY."""
+    from .core.hardneg import rank_eval_fps, rank_overturns
+
+    if mode in ("auto", "gt") and cfg.eval_results_path.exists():
+        ev = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
+        fp_detail = ev.get("fp_detail", {})
+        if mode == "gt" or any("conf" in b for boxes in fp_detail.values() for b in boxes):
+            rows = rank_eval_fps(fp_detail, top)
+            log.info("hardneg(gt): %d confidently-wrong eval FPs", len(rows))
+            return {"mode": "gt", "rows": rows}
+    if mode == "gt":
+        raise ValueError("GT 模式需要含 conf 的 eval_results.json;請先 vix eval-ingest")
+    if not cfg.thresholds_path.exists():
+        raise ValueError("GT-free hardneg 需已校準 thresholds(先 vix calibrate),或先 eval-ingest 走 GT 模式")
+    policy = ThresholdPolicy.load(cfg.thresholds_path)
+    scorer = OutlierScorer(_emb_by_class(adapter, {Tag.GOLDEN}), k=cfg.knn_k)
+    dets = []
+    for h, _s, ds, tags in adapter.samples():
+        if set(tags) & {Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL, Tag.REJECTED}:
+            continue  # only unlabeled / incoming detections are candidates for "confidently wrong"
+        for d in ds:
+            ct = policy.thresholds.get(d.label)
+            if d.embedding is None or ct is None:
+                continue
+            kd, _low = scorer.score_detection(d.embedding, d.label)
+            dets.append({"id": h, "pred_class": d.label, "conf": d.confidence,
+                         "knn_dist": kd, "conf_thr": ct.conf_thr, "dist_thr": ct.dist_thr})
+    rows = rank_overturns(dets, top)
+    log.info("hardneg(gt_free): %d confident embedding-overturns from %d detections", len(rows), len(dets))
+    return {"mode": "gt_free", "rows": rows}
+
+
+def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=None):
+    """Roll VIX's model-validated signals + hardneg + a per-weak-class label queue into ONE
+    human-readable 'where YOLO is weak / go label these' Markdown report (model-loop-v2). Two-mode:
+    GT block (per-class AP/confusion/loc_gap/FP-FN typing + confidently-wrong eval-FPs) when a val
+    set was ingested; GT-free block (embedding overturns) when thresholds exist. Writes a .md, logs
+    a proxy-stamped audit entry. Every 'go label these' ranking is a PROXY (no retraining)."""
+    from collections import Counter
+
+    from .core.weakness_report import render_weakness_report
+
+    data = {"mode": "gt_free", "mAP": None, "loc_gap": None, "per_class": [],
+            "confusion": [], "confident_wrong": [], "overturns": [], "queue": {}}
+    ev = None
+    if cfg.eval_results_path.exists():
+        ev = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
+        data["mode"] = "gt"
+        data["mAP"], data["loc_gap"] = ev.get("mAP"), ev.get("loc_gap")
+        per_class_ap, n_gt = ev.get("per_class_ap", {}), ev.get("n_gt", {})
+        confusion, fn_detail = ev.get("confusion", {}), ev.get("fn_detail", {})
+        fn_types: dict[str, Counter] = {}  # dominant FN failure mode per class
+        for boxes in fn_detail.values():
+            for b in boxes:
+                fn_types.setdefault(b["label"], Counter())[b["type"]] += 1
+        partner: dict[str, tuple] = {}  # top confusion partner per truth class
+        for pair, n in confusion.items():
+            truth, pred = pair.split("->", 1)
+            if n > partner.get(truth, ("", 0))[1]:
+                partner[truth] = (pred, n)
+        rows = []
+        for c, ap in per_class_ap.items():
+            dom = fn_types.get(c)
+            cp = partner.get(c)
+            rows.append({"cls": c, "ap": ap, "n_gt": n_gt.get(c, 0),
+                         "dom_fn_type": (dom.most_common(1)[0][0] if dom else None),
+                         "top_confusion": (f"{cp[0]} ({cp[1]})" if cp else None)})
+        rows.sort(key=lambda r: r["ap"])  # weakest first
+        data["per_class"] = rows
+        data["confusion"] = list(confusion.items())[:10]
+        data["confident_wrong"] = hardneg(adapter, cfg, top=15, mode="gt")["rows"]
+        for r in rows[:top_classes]:  # per-weak-class label queue (class-aware error-mine)
+            if r["ap"] >= 1.0:
+                continue
+            try:
+                cands = error_mine(adapter, cfg, top=queue_per_class, for_class=r["cls"])
+            except (ValueError, OSError):
+                cands = []
+            if cands:
+                data["queue"][r["cls"]] = [{"id": x["id"], "closeness": x["closeness"]} for x in cands]
+    try:  # GT-free overturns: best-effort (needs calibrated thresholds + unlabeled detections)
+        data["overturns"] = hardneg(adapter, cfg, top=15, mode="gt_free")["rows"]
+    except (ValueError, OSError):
+        pass
+
+    out = Path(out_path or (cfg.workspace / "weakness_report.md"))
+    out.write_text(render_weakness_report(data), encoding="utf-8")
+    DecisionLog(cfg.decision_log_path).append(
+        "weakness_report", decision=data["mode"],
+        extra={"mAP": data["mAP"], "weak_classes": [r["cls"] for r in data["per_class"][:top_classes]],
+               "note": "proxy: no retraining; rankings are suspicion/priority, not measured mAP gain"})
+    log.info("weakness_report: mode=%s -> %s", data["mode"], out)
+    return {"path": str(out), "data": data}
 
 
 def bank_audit(adapter, cfg, defect_tag=Tag.GOLDEN, reflection_tag=Tag.REJECTED, normal_tag=None,

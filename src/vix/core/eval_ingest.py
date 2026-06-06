@@ -131,7 +131,8 @@ def _match_image(gts: list[dict], preds: list[dict], thr: float, loc_band: float
                 paired = True  # this FP is an FN's partner -> reported there, not here
                 break
         if not paired:
-            fp_detail.append({"label": pl, "bbox": list(pb), "type": "background"})
+            fp_detail.append({"label": pl, "bbox": list(pb), "type": "background",
+                              "conf": round(float(preds[pidx].get("conf", 0.0)), 4)})  # for confidently-wrong mining
 
     return per_pred, fn_labels, confusion, len(fp_idx), fp_detail, fn_detail
 

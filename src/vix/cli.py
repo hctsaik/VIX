@@ -270,6 +270,13 @@ def _build_parser() -> argparse.ArgumentParser:
     seb.add_argument("--map-drop", type=float, default=0.02, help="max allowed overall mAP drop")
     sbq = sub.add_parser("box-qa", help="per-box geometry QA on golden boxes (degenerate/truncated/area/aspect outliers) — read-only")
     sbq.add_argument("--top", type=int, default=50)
+    shn = sub.add_parser("hardneg", help="rank the detector's most confident-yet-wrong detections (GT eval-FP, or GT-free embedding overturn)")
+    shn.add_argument("--top", type=int, default=50)
+    shn.add_argument("--mode", choices=["auto", "gt", "gt_free"], default="auto")
+    swr = sub.add_parser("weakness-report", help="roll per-class AP + confusion + FP/FN typing + loc_gap + hardneg into a human-readable 'where YOLO is weak / go label these' report")
+    swr.add_argument("--top-classes", type=int, default=5)
+    swr.add_argument("--queue-per-class", type=int, default=10)
+    swr.add_argument("--out", default=None)
     sba = sub.add_parser("bank-audit", help="multi-bank Top-K embedding audit of low-conf proposals -> defect/reflection/unknown (advisory)")
     sba.add_argument("--defect-tag", default="golden")
     sba.add_argument("--reflection-tag", default="rejected")
@@ -727,6 +734,26 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"{it['id']}  [{it['issue']}] {it['label']}: {it['why']}")
         if not issues:
             print("無框品質問題(或 golden 框數不足以建立各類包絡)")
+
+    elif args.cmd == "hardneg":
+        r = pipeline.hardneg(adapter, cfg, top=args.top, mode=args.mode)
+        print(f"hardneg 模式={r['mode']}({len(r['rows'])} 筆「自信卻錯」,高→低):")
+        for row in r["rows"]:
+            print(f"  {row['id']}  {row.get('pred_class')}  wrongness={row['wrongness']}  {row['why']}")
+        if not r["rows"]:
+            print("  無(GT 模式需先 eval-ingest;GT-free 需 calibrate 且有未標註偵測)")
+
+    elif args.cmd == "weakness-report":
+        r = pipeline.weakness_report(adapter, cfg, top_classes=args.top_classes,
+                                     queue_per_class=args.queue_per_class, out_path=args.out)
+        d = r["data"]
+        print(f"YOLO 弱點報告({d['mode']} 模式)-> {r['path']}")
+        if d.get("mAP") is not None:
+            print(f"  mAP@0.5={d['mAP']}  loc_gap={d.get('loc_gap')}")
+        for row in d["per_class"][:args.top_classes]:
+            print(f"  弱類 {row['cls']}: AP={row['ap']} 漏報型態={row.get('dom_fn_type') or '-'} "
+                  f"佇列={len(d['queue'].get(row['cls'], []))} 候選")
+        print("  註:未重訓 → 佇列是 PROXY 優先排序,非實測 mAP 增益")
 
     elif args.cmd == "bank-audit":
         r = pipeline.bank_audit(
