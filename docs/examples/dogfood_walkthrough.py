@@ -192,6 +192,31 @@ def main():
         session.spaces = fo.Space(children=[fo.Panel(type="vix_queue")])
         shot(8, "review-queue-panel", ["覆核佇列", "風險", "vix_hash"], wait=8000)
 
+        # 9) DEEPER label-QA (opt-in, SAM): is the box pixel-tight around the object?
+        session.spaces = fo.Space(children=[fo.Panel(type="Samples", pinned=True)])
+        page.wait_for_timeout(2000)
+        page.keyboard.press("`")
+        page.keyboard.type("flag_loose_boxes")
+        shot(9, "flag-loose-boxes-operator-sam", ["太鬆的框"], wait=1800)
+        page.keyboard.press("Escape")
+        # apply the SAM box-tightness effect (the operator's pipeline path) -> tag vixq:loose_box
+        n_loose = 0
+        try:
+            loose = pipeline.box_tightness(ad, cfg, limit=18, iou_thr=0.5)
+            for h in {it["id"] for it in loose}:
+                ad.apply_tags(h, ["vixq:loose_box"])
+            ds.reload()
+            n_loose = ds.match_tags("vixq:loose_box").count()
+        except Exception as exc:  # noqa: BLE001 - SAM weights unavailable -> skip the step gracefully
+            print("  SAM step skipped:", exc)
+
+        # 10) the loose-box worklist (boxes that don't pixel-hug the object)
+        if n_loose:
+            session.view = ds.match_tags("vixq:loose_box")
+            shot(10, "loose-box-worklist-sam", None, wait=6000)
+            print(f"     (cross-check: {n_loose} images flagged vixq:loose_box by SAM)")
+            session.clear_view()
+
         browser.close()
     session.close()
 

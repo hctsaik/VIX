@@ -39,6 +39,16 @@
 ![review queue](walkthrough/08_review-queue-panel.png)
 `VIX: 覆核佇列` 面板:按風險排序的 風險 / vix_hash / 原因(proxy) 表,列動作 看圖 / 確認→golden / 誤報排除 —— 整個覆核迴圈在一個面板內完成。
 
+## 進階(選用):SAM 框緊度 —— box_qa 做不到的像素級檢查
+
+### 9. `VIX: 標出太鬆的框(SAM,選用)`
+![sam operator](walkthrough/09_flag-loose-boxes-operator-sam.png)
+`box_qa` 只看框的幾何(退化/離群);這個用 SAM 遮罩檢查框有沒有**像素級貼合**物件,抓「框畫得鬆/沒對齊」。需 ultralytics SAM 權重(一次下載)。
+
+### 10. 太鬆的框工作清單
+![loose box worklist](walkthrough/10_loose-box-worklist-sam.png)
+套 `vixq:loose_box` 篩出 SAM 判定框沒貼合物件的影像。PROXY(SAM 也是猜的),需人工覆核、勿自動改框;不規則物件(如 pothole)框本來就難完全貼合,可調低 IoU 門檻只留最鬆的。
+
 ---
 
 **這份走查回答了你的兩個問題**:目標一(步驟 3–4)= 在 GUI 用選的產生模型弱點報告;目標二(步驟 5–7)= 一鍵標出、篩選、點開疑似不準的標註。**侷限**:`box_qa` 抓「框幾何不對」、`audit_labels` 抓「類別標錯」(單類別 pothole 下後者通常為 0);抓「框畫得鬆但形狀正常(像素級不貼合)」需 opt-in 的 SAM —— 尚未納入。

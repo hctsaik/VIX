@@ -27,6 +27,10 @@ STEPS = [
     ("07_flagged-sample-bad-box.png", "點進一張,直接看到不準的框", "從清單點開,直接檢視那個有問題的標註框。"),
     ("08_review-queue-panel.png", "一站式 · 可點的覆核佇列",
      "<b>VIX: 覆核佇列</b> 面板:按風險排序的 風險 / vix_hash / 原因(proxy) 表,列動作 看圖 / 確認→golden / 誤報排除 —— 整個覆核迴圈在一個面板完成。"),
+    ("09_flag-loose-boxes-operator-sam.png", "進階(選用)· SAM 框緊度",
+     "<b>VIX: 標出太鬆的框(SAM,選用)</b> —— box_qa 只看框的幾何;這個用 SAM 遮罩檢查框有沒有<b>像素級貼合</b>物件,抓「框畫得鬆/沒對齊」(box_qa 結構上做不到)。需 ultralytics SAM 權重。"),
+    ("10_loose-box-worklist-sam.png", "進階(選用)· 太鬆的框工作清單",
+     "套 <code>vixq:loose_box</code> 篩出 SAM 判定框沒貼合物件的影像。PROXY(SAM 也是猜的),需人工覆核、勿自動改框;不規則物件(如 pothole)框本來就難完全貼合,可調低 IoU 門檻只留最鬆的。"),
 ]
 
 
