@@ -303,6 +303,11 @@ def route(adapter: DatasetAdapter, cfg: Config, policy: ThresholdPolicy | None =
     counts["flag_rate"] = round(flag_rate, 3)
     counts["warning"] = warning
     counts["backend_mismatch"] = backend_mismatch
+    _cov = _coverage_verdict(adapter, cfg)  # also catch class-coverage mismatch (calibration from another dataset)
+    counts["coverage_ok"] = _cov.ok
+    if not _cov.ok:
+        counts["coverage_reason"] = _cov.reason
+        log.warning("route: calibration coverage mismatch -> %s", _cov.reason)
     log.info("route: %d pass, %d review (flag_rate=%.2f)",
              counts[Routing.PASS], counts[Routing.REVIEW], flag_rate)
     return counts
@@ -624,9 +629,38 @@ def health_report(adapter, cfg, out_dir, version="current", prev=None):  # S10
     return report, paths
 
 
-def review_queue(adapter, cfg, top=50):  # T3 + T7
+def _coverage_verdict(adapter, cfg):
+    """Is the loaded calibration usable for THIS dataset? (honesty guard, see core.calibration_coverage)"""
+    from .core.calibration_coverage import assess_coverage
+
+    policy = ThresholdPolicy.load(cfg.thresholds_path) if cfg.thresholds_path.exists() else None
+    det_classes = {d.label for _h, _s, dets, _t in adapter.samples() for d in dets}
+    try:
+        live_fp = (adapter.encoder_fingerprint() or {}).get("fp")
+    except Exception:  # noqa: BLE001 - fingerprint is optional context, never fail the check over it
+        live_fp = None
+    return assess_coverage(policy.thresholds if policy else None, policy.meta if policy else None,
+                           det_classes, cfg.embedding_backend, live_fp)
+
+
+# golden-free / mismatched calibration -> the review queue's novelty ranking is meaningless; say so
+_NO_GOLDEN_REASON = ("尚無 golden 參照樣本,無法為覆核佇列排序(目前標籤皆為未覆核 provisional)。"
+                     "請先在 App 確認部分樣本為 golden(或 vix resolve <hash> --confirm)再 vix calibrate / route 產生佇列。")
+
+
+def review_queue(adapter, cfg, top=50, coverage_out=None):  # T3 + T7
     cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.REJECTED, Tag.EVAL])
     ref = _image_items(adapter, want_tags=[Tag.GOLDEN])
+    if cands and not ref:
+        # No golden reference => triage ranks every box at knn_dist=inf (nov=1.0) => a uniform, fake-
+        # confident "far_from_known" queue. Fail closed with a clear reason instead of emitting junk.
+        # (Kept cheap: no full-dataset coverage scan on this path so the panel banner appears instantly.)
+        if coverage_out is not None:
+            coverage_out["reason"] = _NO_GOLDEN_REASON
+        log.warning("review_queue disabled: no golden reference (queue would be degenerate)")
+        return []
+    if coverage_out is not None:  # golden exists -> surface any calibration-coverage mismatch too
+        coverage_out["coverage"] = _coverage_verdict(adapter, cfg)
     label_issue_ids = {i.id.split(":")[0] for i in audit_labels(adapter, cfg)}  # AJ2/AJ6: activate label-error risk
     ranked = _review_queue(cands, ref, k=cfg.knn_k, label_issue_ids=label_issue_ids)[:top]
     log.info("review_queue: %d candidates ranked, returning top %d", len(cands), len(ranked))

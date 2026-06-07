@@ -217,12 +217,17 @@ class VixReportPanel(foo.Panel):
 
 def _queue_rows(ctx, top=50):
     """The risk-ranked review queue as table rows. Pure render of pipeline.review_queue (tested core):
-    no ranking/decision logic lives here. Returns (rows, error_str)."""
+    no ranking/decision logic lives here. Returns (rows, error_str). When the queue is disabled because
+    there's no golden reference / the calibration belongs to another dataset, review_queue returns no
+    rows and an honest reason (via coverage_out) — surface THAT instead of a fake-confident table."""
     cfg, ad = Config(), _adapter(ctx)
+    cov: dict = {}
     try:
-        q = pipeline.review_queue(ad, cfg, top=top)
+        q = pipeline.review_queue(ad, cfg, top=top, coverage_out=cov)
     except Exception as exc:  # noqa: BLE001 - surface in-panel rather than crash the App
         return [], str(exc)
+    if not q and cov.get("reason"):  # disabled (no golden / mismatched calibration) -> loud, honest banner
+        return [], cov["reason"]
     return [{"id": r["id"], "risk": round(r.get("risk", 0.0), 3), "why": (r.get("why") or "")[:90]} for r in q], None
 
 
@@ -280,7 +285,10 @@ class VixQueuePanel(foo.Panel):
     def render(self, ctx):
         panel = types.Object()
         if ctx.panel.state.err:
-            panel.md(f"佇列產生失敗:`{ctx.panel.state.err}`\n\n需先 `vix calibrate` + `vix route`。", name="qerr")
+            # honest banner INSTEAD of the table (no degenerate rows, no empty "No data" widget)
+            panel.md(f"### ⚠ 覆核佇列尚未就緒\n\n{ctx.panel.state.err}", name="qerr")
+            panel.btn("refresh", label="重新整理佇列", on_click=self.on_refresh)
+            return types.Property(panel, view=types.GridView(height=100, width=100))
         table = types.TableView()
         table.add_column("risk", label="風險")
         table.add_column("id", label="vix_hash")

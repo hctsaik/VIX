@@ -330,6 +330,17 @@ def test_s3_queue_uncalibrated_is_graceful(bare):
     assert not _reviews(bare.cfg) and _chain_ok(bare.cfg)
 
 
+def test_gui_queue_warns_no_golden_instead_of_fake_rows(bare):
+    """Honesty guard (the reported bug): with NO golden reference the queue panel must show a loud
+    warning and emit ZERO rows — not a uniform fake-confident `far_from_known` table."""
+    p = PLUGIN.VixQueuePanel()
+    ctx = _ctx(bare.ds)
+    p.on_load(ctx)
+    assert ctx.panel.data.rows == []                                  # no degenerate rows
+    assert ctx.panel.state.err and ("golden" in ctx.panel.state.err or "calibrate" in ctx.panel.state.err)
+    assert not _reviews(bare.cfg) and _chain_ok(bare.cfg)
+
+
 def test_s4_empty_queue_has_no_error_block(live):
     """S4: when all candidates are resolved, the queue is empty WITH NO error block (empty != broken); chain valid."""
     for r in pipeline.review_queue(live.ad, live.cfg):

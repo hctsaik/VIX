@@ -541,6 +541,8 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"⚠️ {counts['warning']}")
         if counts.get("backend_mismatch"):
             print("⚠️ 校準與目前 embedding 後端不一致;距離門檻不可靠,請以同一後端重新 calibrate")
+        elif not counts.get("coverage_ok", True) and counts.get("coverage_reason"):
+            print(f"⚠️ {counts['coverage_reason']}")
 
     elif args.cmd == "guard":
         if args.build:
@@ -631,8 +633,13 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"report -> {paths['md']}")
 
     elif args.cmd == "review-queue":
-        for r in pipeline.review_queue(adapter, cfg, args.top):
-            print(f"{r['id']}  risk={r['risk']:.3f}  {r['why']}")
+        cov = {}
+        rows = pipeline.review_queue(adapter, cfg, args.top, coverage_out=cov)
+        if not rows and cov.get("reason"):  # disabled (no golden / mismatched calibration) — say so, don't print nothing
+            print(f"⚠ 覆核佇列尚未就緒:{cov['reason']}")
+        else:
+            for r in rows:
+                print(f"{r['id']}  risk={r['risk']:.3f}  {r['why']}")
 
     elif args.cmd == "status":
         st = pipeline.status(adapter, cfg)

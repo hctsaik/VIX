@@ -29,6 +29,20 @@ def test_review_queue_and_audit(tmp_path):
     assert len(recs) >= 1 and all(r["event"] == "report" for r in recs)
 
 
+def test_review_queue_disabled_without_golden(tmp_path):
+    """Honesty guard: with NO golden reference the novelty ranking is degenerate (every box knn_dist=inf),
+    so review_queue must fail closed with an honest reason instead of a uniform fake-confident queue."""
+    cfg = Config(workspace=tmp_path / "ws")
+    cfg.ensure_dirs()
+    ad = InMemoryAdapter()
+    ad.seed("p1", "p1.png", [_det("pothole", 1.0, [0, 1])])  # provisional only — no Tag.GOLDEN anywhere
+    ad.seed("p2", "p2.png", [_det("pothole", 1.0, [1, 0])])
+    cov: dict = {}
+    q = pipeline.review_queue(ad, cfg, top=10, coverage_out=cov)
+    assert q == []                                   # no degenerate rows
+    assert "golden" in cov["reason"]                 # honest, actionable reason surfaced
+
+
 def test_relabel_merges_classes_with_log(tmp_path):
     cfg = Config(workspace=tmp_path / "ws")
     cfg.ensure_dirs()
