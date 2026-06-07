@@ -325,7 +325,7 @@ def test_s3_queue_uncalibrated_is_graceful(bare):
     ctx = _ctx(bare.ds)
     p.on_load(ctx)  # must not raise
     if ctx.panel.state.err:
-        assert "calibrate" in ctx.panel.state.err
+        assert "確認" in ctx.panel.state.err or "golden" in ctx.panel.state.err
     assert isinstance(ctx.panel.data.rows, list)
     assert not _reviews(bare.cfg) and _chain_ok(bare.cfg)
 

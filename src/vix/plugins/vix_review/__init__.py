@@ -59,6 +59,13 @@ class ConfirmGolden(foo.Operator):
     def config(self):
         return foo.OperatorConfig(name="confirm_golden", label="VIX: 確認 → 併入 golden", dynamic=True)
 
+    def resolve_placement(self, ctx):
+        # toolbar button so users don't need the ` operator browser (select images first, then click)
+        return types.Placement(
+            types.Places.SAMPLES_GRID_ACTIONS,
+            types.Button(label="VIX: 確認正確樣本(golden)", icon="/assets/check.svg", prompt=True),
+        )
+
     def resolve_input(self, ctx):
         inputs = types.Object()
         inputs.str("label", label="(選填)更正類別,留空則沿用原標籤", required=False)
@@ -80,6 +87,18 @@ class DismissFalseAlarm(foo.Operator):
     @property
     def config(self):
         return foo.OperatorConfig(name="dismiss_false_alarm", label="VIX: 標記誤報並排除", dynamic=True)
+
+    def resolve_placement(self, ctx):
+        return types.Placement(
+            types.Places.SAMPLES_GRID_ACTIONS,
+            types.Button(label="VIX: 標記誤報排除", icon="/assets/ban.svg", prompt=True),
+        )
+
+    def resolve_input(self, ctx):
+        n = len(_selected_hashes(ctx))
+        inputs = types.Object()
+        inputs.view("warn", types.Notice(label=f"將把選取的 {n} 張標記為誤報並排除(可重新確認復原)。"))
+        return types.Property(inputs, view=types.View(label="標記誤報並排除"))
 
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)

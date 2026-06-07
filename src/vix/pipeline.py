@@ -643,9 +643,11 @@ def _coverage_verdict(adapter, cfg):
                            det_classes, cfg.embedding_backend, live_fp)
 
 
-# golden-free / mismatched calibration -> the review queue's novelty ranking is meaningless; say so
-_NO_GOLDEN_REASON = ("尚無 golden 參照樣本,無法為覆核佇列排序(目前標籤皆為未覆核 provisional)。"
-                     "請先在 App 確認部分樣本為 golden(或 vix resolve <hash> --confirm)再 vix calibrate / route 產生佇列。")
+# golden-free -> the review queue's novelty ranking is meaningless; say so in plain language
+_NO_GOLDEN_REASON = (
+    "這個清單需要你先「確認幾張標註正確的圖」當作比對基準,但目前一張都還沒有。\n\n"
+    "**怎麼開始:** 到 Samples 分頁挑幾張你覺得標得對的圖、勾起來 → 按工具列的 ✓「確認正確樣本(golden)」。\n\n"
+    "完成後回來按「重新整理佇列」,它就會把「**最不像你已確認的那些**」的圖排在最前面,讓你先檢查最可疑的。")
 
 
 def review_queue(adapter, cfg, top=50, coverage_out=None):  # T3 + T7
