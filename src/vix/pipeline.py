@@ -648,18 +648,27 @@ _NO_GOLDEN_REASON = (
     "這個清單需要你先「確認幾張標註正確的圖」當作比對基準,但目前一張都還沒有。\n\n"
     "**怎麼開始:** 到 Samples 分頁挑幾張你覺得標得對的圖、勾起來 → 按工具列的 ✓「確認正確樣本(golden)」。\n\n"
     "完成後回來按「重新整理佇列」,它就會把「**最不像你已確認的那些**」的圖排在最前面,讓你先檢查最可疑的。")
+# golden exists but its boxes have no DINO embedding (e.g. Tier-A only, or a relabel wiped them) ->
+# the similarity ranking needs embeddings; tell the user exactly how to fix it (not "no golden")
+_GOLDEN_NO_EMB_REASON = (
+    "你已確認了 golden,但這些圖的「框」沒有 DINO 嵌入,無法計算相似度排序。\n\n"
+    "**怎麼修:** 按工具列的「建立相似搜尋索引」(會自動補算嵌入),或在 CLI 跑 `vix embed`,"
+    "再回來按「重新整理佇列」。")
 
 
 def review_queue(adapter, cfg, top=50, coverage_out=None):  # T3 + T7
     cands = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.REJECTED, Tag.EVAL])
     ref = _image_items(adapter, want_tags=[Tag.GOLDEN])
     if cands and not ref:
-        # No golden reference => triage ranks every box at knn_dist=inf (nov=1.0) => a uniform, fake-
-        # confident "far_from_known" queue. Fail closed with a clear reason instead of emitting junk.
-        # (Kept cheap: no full-dataset coverage scan on this path so the panel banner appears instantly.)
+        # No usable golden reference => triage ranks every box at knn_dist=inf (nov=1.0) => a uniform,
+        # fake-confident "far_from_known" queue. Fail closed with a clear reason instead of junk.
+        # Distinguish "no golden at all" from "golden tagged but its boxes lack embeddings" so the
+        # message is actionable (the latter happens after a relabel wiped them, or on Tier-A-only data).
+        has_golden = any(Tag.GOLDEN in set(t) for _h, _s, _d, t in adapter.samples())
+        reason = _GOLDEN_NO_EMB_REASON if has_golden else _NO_GOLDEN_REASON
         if coverage_out is not None:
-            coverage_out["reason"] = _NO_GOLDEN_REASON
-        log.warning("review_queue disabled: no golden reference (queue would be degenerate)")
+            coverage_out["reason"] = reason
+        log.warning("review_queue disabled: %s", "golden lacks embeddings" if has_golden else "no golden reference")
         return []
     if coverage_out is not None:  # golden exists -> surface any calibration-coverage mismatch too
         coverage_out["coverage"] = _coverage_verdict(adapter, cfg)

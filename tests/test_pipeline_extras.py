@@ -43,6 +43,20 @@ def test_review_queue_disabled_without_golden(tmp_path):
     assert "golden" in cov["reason"]                 # honest, actionable reason surfaced
 
 
+def test_review_queue_golden_without_embeddings_message(tmp_path):
+    """When golden is TAGGED but its boxes have no embedding (e.g. a relabel wiped them, or Tier-A only),
+    the queue must say 'golden lacks embeddings -> run embed', NOT the misleading 'no golden'."""
+    from vix.types import BBox, Detection
+    cfg = Config(workspace=tmp_path / "ws")
+    cfg.ensure_dirs()
+    ad = InMemoryAdapter()
+    ad.seed("g0", "g0.png", [Detection("a", 1.0, BBox(0.5, 0.5, 0.2, 0.2), embedding=None)], tags=[Tag.GOLDEN])
+    ad.seed("c1", "c1.png", [_det("a", 0.5, [0, 1])])     # a candidate that DOES have an embedding
+    cov: dict = {}
+    q = pipeline.review_queue(ad, cfg, top=5, coverage_out=cov)
+    assert q == [] and "嵌入" in cov["reason"]            # golden-without-embedding message, not "no golden"
+
+
 def test_relabel_merges_classes_with_log(tmp_path):
     cfg = Config(workspace=tmp_path / "ws")
     cfg.ensure_dirs()

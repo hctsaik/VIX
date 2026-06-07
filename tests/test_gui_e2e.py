@@ -26,6 +26,7 @@ from vix import pipeline, verification as V  # noqa: E402
 from vix.adapters.fiftyone_adapter import FiftyOneAdapter  # noqa: E402
 from vix.config import Config  # noqa: E402
 from vix.core.decision_log import DecisionLog  # noqa: E402
+from vix.types import Tag  # noqa: E402
 
 
 def _load_plugin():
@@ -328,6 +329,22 @@ def test_s3_queue_uncalibrated_is_graceful(bare):
         assert "確認" in ctx.panel.state.err or "golden" in ctx.panel.state.err
     assert isinstance(ctx.panel.data.rows, list)
     assert not _reviews(bare.cfg) and _chain_ok(bare.cfg)
+
+
+def test_confirm_golden_relabel_preserves_embeddings(live):
+    """Regression (the reported bug): confirming→golden WITH a relabel must NOT wipe the DINO crop
+    embeddings. set_detections used to rebuild fo.Detection without the embedding field, so relabelled
+    golden lost its vector -> _image_items skipped it -> review_queue saw 'no golden' despite the tag."""
+    import fiftyone as fo  # noqa: F401
+    h = next((hh for hh, _s, dets, tags in live.ad.samples()
+              if "golden" not in tags and any(d.embedding is not None for d in dets)), None)
+    assert h, "fixture needs a non-golden sample with detection embeddings"
+    pipeline.resolve_review(live.ad, live.cfg, h, "confirm", label="relabeled_x")  # exercises set_detections
+    live.ds.reload()
+    dets_after = next(dets for hh, _s, dets, _t in live.ad.samples() if hh == h)
+    assert any(d.embedding is not None for d in dets_after), "relabel wiped the detection embedding"
+    assert any(d.label == "relabeled_x" for d in dets_after)                       # relabel still applied
+    assert h in {it.id for it in pipeline._image_items(live.ad, want_tags=[Tag.GOLDEN])}  # counts as golden ref
 
 
 def test_gui_queue_warns_no_golden_instead_of_fake_rows(bare):

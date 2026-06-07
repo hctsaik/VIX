@@ -92,6 +92,8 @@ class FiftyOneAdapter(DatasetAdapter):
         dets = []
         for d in detections:
             det = fo.Detection(label=d.label, bounding_box=_to_fo_bbox(d.bbox), confidence=d.confidence)
+            if d.embedding is not None:  # preserve the DINOv2 crop embedding through relabel/rewrite —
+                det[_EMB_FIELD] = np.asarray(d.embedding, dtype=float).tolist()  # else confirm→golden wipes it
             dets.append(det)
         s[_DET_FIELD] = fo.Detections(detections=dets)
         s.save()
