@@ -255,6 +255,9 @@ def _build_parser() -> argparse.ArgumentParser:
     svg = sub.add_parser("verify-gui", help="Tier-2 GUI 驗證:Playwright 驅動 App + 執行 operator(需 fiftyone+playwright)")
     svg.add_argument("--no-execute", action="store_true", help="只截圖,不實際點 Execute")
 
+    swt = sub.add_parser("walkthrough", help="一鍵截圖巡覽目前資料集的 App(grid+面板+operators)→ HTML 報告(需 fiftyone+playwright)")
+    swt.add_argument("--port", type=int, default=5152)
+
     snc = sub.add_parser("new-classes", help="open-set: surface suspected new classes (U1)")
     snc.add_argument("--novelty-radius", type=float, default=0.3)
     snc.add_argument("--cluster-distance", type=float, default=0.2)
@@ -700,6 +703,15 @@ def _main(argv: list[str] | None = None) -> int:
         from .verification import run_gui
 
         return run_gui(cfg, execute=not args.no_execute)
+
+    elif args.cmd == "walkthrough":
+        from .verification import run_walkthrough
+
+        name = getattr(adapter, "dataset_name", None)
+        if not name:
+            print("walkthrough 需要 FiftyOne adapter(用 --adapter fiftyone,且資料已 ingest)")
+            return 1
+        return run_walkthrough(cfg, name, port=args.port)
 
     elif args.cmd == "new-classes":
         clusters = pipeline.new_classes(adapter, cfg, args.novelty_radius, args.cluster_distance)

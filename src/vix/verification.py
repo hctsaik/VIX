@@ -119,6 +119,88 @@ def run_headless(cfg: Config) -> int:
     return 0 if ok else 1
 
 
+def run_walkthrough(cfg: Config, dataset_name: str, port: int = 5152) -> int:
+    """`vix walkthrough`: tour the CURRENT dataset in a live FiftyOne App and emit a screenshot HTML
+    report (grid + vix_report panel + vix_queue panel + the VIX operator browser). One-click visual
+    record of your App state. Needs FiftyOne + Playwright + a running App (Tier-2)."""
+    os.environ["FIFTYONE_PLUGINS_DIR"] = str(Path(__file__).resolve().parent / "plugins")
+    os.environ.setdefault("FIFTYONE_DO_NOT_TRACK", "true")
+    os.environ["VIX_WORKSPACE"] = str(cfg.workspace.resolve())
+    try:
+        import fiftyone as fo
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("walkthrough 需要 FiftyOne + Playwright:pip install -e \".[fiftyone]\" && playwright install chromium")
+        return 1
+    if not fo.dataset_exists(dataset_name):
+        print(f"找不到資料集 {dataset_name!r};先 `vix ingest`(用 FiftyOne adapter)再跑 walkthrough。")
+        return 1
+
+    cfg.ensure_dirs()
+    out_dir = cfg.workspace / "walkthrough"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ds = fo.load_dataset(dataset_name)
+    url = f"http://localhost:{port}"
+    steps = [  # (filename, caption, how-to-reach)
+        ("1_grid.png", "資料總覽(grid)", lambda s: s.__setattr__("spaces", fo.Space(children=[fo.Panel(type="Samples", pinned=True)]))),
+        ("2_report.png", "弱點/一致性報告面板(先 weakness-report 或用 generate_weakness_report operator)",
+         lambda s: s.__setattr__("spaces", fo.Space(children=[fo.Panel(type="vix_report")]))),
+        ("3_queue.png", "覆核佇列面板(先 calibrate + route)",
+         lambda s: s.__setattr__("spaces", fo.Space(children=[fo.Panel(type="vix_queue")]))),
+    ]
+    session = fo.launch_app(ds, remote=True, port=port)
+    captured = []
+    try:
+        if not _ready_port(port):
+            print("FAIL: App server 未就緒")
+            return 1
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": 1680, "height": 1050})
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(12000)
+            for fn, cap, reach in steps:
+                reach(session)
+                page.wait_for_timeout(7000)
+                page.screenshot(path=str(out_dir / fn), full_page=True)
+                captured.append((fn, cap))
+                print(f"  [OK] {fn}  {cap}")
+            # operator browser (the VIX action entry point)
+            session.spaces = fo.Space(children=[fo.Panel(type="Samples", pinned=True)])
+            page.wait_for_timeout(2000)
+            page.keyboard.press("`")
+            page.keyboard.type("VIX")
+            page.wait_for_timeout(1500)
+            page.screenshot(path=str(out_dir / "4_operators.png"), full_page=True)
+            captured.append(("4_operators.png", "VIX operators(按 ` 開啟)"))
+            print("  [OK] 4_operators.png  VIX operators")
+            browser.close()
+    finally:
+        session.close()
+
+    html = ["<!doctype html><html lang='zh-Hant'><head><meta charset='utf-8'><title>VIX walkthrough</title>",
+            "<style>body{font-family:system-ui,'Microsoft JhengHei',sans-serif;max-width:1040px;margin:0 auto;"
+            "padding:24px;background:#0f1115;color:#e6e6e6}h2{font-size:17px;margin:22px 0 6px}"
+            "img{width:100%;border:1px solid #2a3a50;border-radius:8px}</style></head><body>",
+            f"<h1>VIX walkthrough — {dataset_name}</h1>"]
+    for fn, cap in captured:
+        html.append(f"<h2>{cap}</h2><img src='walkthrough/{fn}'>")
+    html.append("</body></html>")
+    (cfg.workspace / "walkthrough.html").write_text("".join(html), encoding="utf-8")
+    print(f"=== walkthrough -> {cfg.workspace / 'walkthrough.html'} ({len(captured)} shots in {out_dir}) ===")
+    return 0
+
+
+def _ready_port(port: int, timeout: int = 60) -> bool:
+    for _ in range(timeout):
+        try:
+            urllib.request.urlopen(f"http://localhost:{port}", timeout=2)
+            return True
+        except Exception:
+            time.sleep(1)
+    return False
+
+
 def run_gui(cfg: Config, execute: bool = True) -> int:
     """GUI Tier-2 驗證:Playwright 驅動 FiftyOne App,截圖並(可選)實際執行 confirm_golden operator。"""
     # 必須在 import fiftyone 之前設好,否則 fiftyone config 已快取、plugin 掃不到
