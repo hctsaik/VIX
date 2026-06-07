@@ -1,0 +1,36 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用按鈕載入你的第一份資料(Playwright 實拍) · VIX</title>
+<link rel="stylesheet" href="../site/assets/site.css">
+<style>main{max-width:1000px;margin:0 auto}.step figure{margin:8px 0 26px}</style>
+</head><body><div class="layout"><main>
+<h1>用按鈕載入你的第一份資料</h1>
+<p class="sub">從 App 初始畫面,到第一份資料(含你的模型評估)載入完成 —— 每一步都是 Playwright 在真實 App 上實際操作的截圖。</p>
+<div class="note">本頁示範用的資料夾 <code>C:\code\claude\patHole_Dataset</code>(665 張、VOC 標註)與模型
+<code>_dogfood_yolo\runs\pothole\weights\best.pt</code>。全程在 FiftyOne App 內用滑鼠完成,不需打任何指令。</div>
+
+<ol class="steps">
+<li class="step"><b>初始畫面</b> —— 打開 VIX App。工具列(橘色那排)最右邊有 <b>📁 載入</b> 與 <b>🗑 刪除</b> 兩顆按鈕。
+<figure><img src="01_initial-screen.png" alt="初始畫面"><figcaption>App 初始畫面(此處顯示內建 demo 資料集);📁/🗑 按鈕在格狀檢視的工具列。</figcaption></figure></li>
+
+<li class="step"><b>點 📁 載入按鈕</b> —— 跳出「載入我的資料集」表單。只要兩格:資料夾路徑(必填)、模型 .pt(選填)。
+<figure><img src="02_load-form-open.png" alt="載入表單開啟"><figcaption>表單刻意極簡:VIX 會自動判斷 YOLO / VOC / COCO 與類別名稱,你不用選格式。</figcaption></figure></li>
+
+<li class="step"><b>填入路徑</b> —— 貼上你的<b>影像資料夾</b>與(選填)<b>模型 .pt</b>。
+<figure><img src="03_form-filled.png" alt="表單已填"><figcaption>影像資料夾 = patHole_Dataset;模型 = best.pt。填了模型就會順便跑「模型弱點評估」。</figcaption></figure></li>
+
+<li class="step"><b>按 Execute</b> —— 開始匯入標籤 + 在你的影像上跑你的模型(665 張約 90 秒)。
+<figure><img src="04_executing.png" alt="執行中"><figcaption>匯入用內容雜湊把標籤對到影像;接著逐張跑模型推論並比對 GT。</figcaption></figure></li>
+
+<li class="step"><b>載入完成</b> —— App 自動切換到你的資料集,並顯示結果摘要。
+<figure><img src="05_first-data-loaded.png" alt="載入完成摘要"><figcaption>結果摘要:665 影像 / 1740 框 / 類別 pothole;header 已切到 dataset「patHole_Dataset」,你的模型評估已跑完(下一張可見側欄掛上 eval_fp / eval_fn 欄位)。</figcaption></figure></li>
+
+<li class="step"><b>你的第一份資料就緒</b> —— 關掉摘要,格狀檢視顯示 665 張坑洞影像,每張都帶著匯入的標註框(青色);側欄出現 <code>eval_fp</code> / <code>eval_fn</code> 表示模型評估已附掛。
+<figure><img src="06_loaded-clean.png" alt="載入完成的資料集"><figcaption>可直接瀏覽、篩選、覆核。誠實提醒:匯入的標籤是「未覆核參照」(非 golden)。</figcaption></figure></li>
+</ol>
+
+<div class="ref">這頁的截圖由 <code>docs/examples/walkthrough_load.py</code> 用 Playwright 在真實 App 上自動操作產生(App 由
+<code>examples/serve_app.py</code> / <code>examples/serve_dataset.py</code> 啟動)。CLI 等價指令:
+<code>vix diagnose C:\code\claude\patHole_Dataset --weights ...\best.pt</code>。</div>
+<footer>VIX · 載入第一份資料 Playwright 實拍走查</footer>
+</main></div></body></html>

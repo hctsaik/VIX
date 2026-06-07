@@ -151,7 +151,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sdg = sub.add_parser("diagnose",
                          help="一鍵:匯入你的標籤+(跑你的模型)→ 該修什麼的弱點/歸因報告(免 golden/FiftyOne)")
     sdg.add_argument("folder", help="images folder (with sibling YOLO labels/ or VOC annotations/, or --json for COCO)")
-    sdg.add_argument("--labels", default="yolo", choices=["yolo", "voc", "coco"], help="ground-truth label format")
+    sdg.add_argument("--labels", default="auto", choices=["auto", "yolo", "voc", "coco"],
+                     help="label format (default auto: sniff yolo/voc/coco + class names from the folder)")
     sdg.add_argument("--weights", default=None, help="your model .pt — Tier A: per-class FP/FN + AP + confusion")
     sdg.add_argument("--audit", action="store_true", help="Tier B: embedding label-audit + failure attribution (needs DINOv2)")
     sdg.add_argument("--names", default=None, help="comma-separated class names (YOLO numeric labels)")
@@ -162,7 +163,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sil = sub.add_parser("import-labels", help="import existing GT labels (yolo/voc/coco) as a diagnosis reference")
     sil.add_argument("folder")
-    sil.add_argument("--labels", default="yolo", choices=["yolo", "voc", "coco"])
+    sil.add_argument("--labels", default="auto", choices=["auto", "yolo", "voc", "coco"])
     sil.add_argument("--batch", default="import")
     sil.add_argument("--names", default=None, help="comma-separated class names (YOLO numeric labels)")
     sil.add_argument("--data-yaml", default=None)
@@ -177,6 +178,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ser.add_argument("--conf", type=float, default=0.05)
     ser.add_argument("--iou", type=float, default=0.5)
     sub.add_parser("embed", help="DINOv2 embeddings + kNN index")
+    sub.add_parser("similarity", help="object-box (patch) similarity index over DINOv2 crops — App 原生『放大鏡』排相似(needs fiftyone)")
     sub.add_parser("calibrate", help="compute per-class percentile thresholds")
     sub.add_parser("route", help="route candidates to pass/review")
 
@@ -509,9 +511,24 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"eval-run: {res.get('n_pred')} preds  mAP@0.5={res['mAP']}  per-class AP={res['per_class_ap']}")
 
     elif args.cmd == "embed":
+        if cfg.embedding_backend != "pixel_fallback":  # detect acceleration BEFORE the slow part
+            from .embedding.dinov2_torch import device_report
+            print(device_report())
         adapter.compute_embeddings(cfg.dinov2_model_key)
         adapter.build_knn_index()
         print("embeddings + kNN index built")
+
+    elif args.cmd == "similarity":
+        if not hasattr(adapter, "build_patch_similarity"):
+            print("需要 FiftyOne adapter(此功能用 fiftyone.brain;memory adapter 不支援)")
+        else:
+            if not adapter.has_embeddings():        # one-time DINOv2 crop embeddings
+                if cfg.embedding_backend != "pixel_fallback":
+                    from .embedding.dinov2_torch import device_report
+                    print(device_report())          # 先偵測 GPU/MPS/CPU 再開始
+                adapter.compute_embeddings(cfg.dinov2_model_key)
+            bk = adapter.build_patch_similarity()    # object-box patch index (sklearn exact-NN)
+            print(f"物件框相似搜尋索引完成:{bk}。在 App 勾選一個框 → 放大鏡(Sort by similarity)→ 全資料集按該物件相似度重排。")
 
     elif args.cmd == "calibrate":
         pol = pipeline.calibrate(adapter, cfg)

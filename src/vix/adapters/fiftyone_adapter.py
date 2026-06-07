@@ -173,6 +173,53 @@ class FiftyOneAdapter(DatasetAdapter):
         log.info("fiftyone.build_knn_index: backend=%s", self.cfg.similarity_backend)
         return "vix_sim"
 
+    def build_patch_similarity(self, patches_field: str = _DET_FIELD,
+                               embeddings_field: str = _EMB_FIELD, backend: str = "sklearn") -> str:
+        """Object-BOX (patch) similarity index over the per-detection DINOv2 crop embeddings, so the
+        App's native sort-by-similarity (select a box → magnifying glass) ranks by how the OBJECT
+        looks — not the whole scene. sklearn backend = exact NN, no extra deps (lancedb etc. optional).
+        Idempotent: replaces any prior run so the operator can be clicked repeatedly.
+
+        We hand brain an explicit {sample_id: (n_patches, dim)} array of OUR vectors rather than the
+        field NAME: a field name doesn't register dynamic per-detection fields, so brain would treat the
+        embeddings as absent and silently download a default zoo model (mobilenet) to recompute them —
+        which is both wrong (not DINO) and fragile (fails if the zoo manifest is unavailable)."""
+        import numpy as np
+        import fiftyone.brain as fob
+
+        ds = self._dataset()
+        brain_key = "vix_patch_sim"
+        if brain_key in ds.list_brain_runs():
+            ds.delete_brain_run(brain_key)
+        emb: dict = {}
+        for s in ds.iter_samples():
+            field = s[patches_field]
+            if field is None or not field.detections:
+                continue
+            vecs = [d.get_field(embeddings_field) for d in field.detections
+                    if d.has_field(embeddings_field) and d.get_field(embeddings_field) is not None]
+            if vecs and len(vecs) == len(field.detections):  # all-or-nothing keeps array↔patch order aligned
+                emb[s.id] = np.array(vecs, dtype=float)
+        if not emb:
+            raise ValueError("找不到偵測框的 DINO 嵌入;請先計算嵌入(vix embed / vix similarity 會自動計算)")
+        fob.compute_similarity(
+            ds, patches_field=patches_field, embeddings=emb, backend=backend, brain_key=brain_key,
+        )
+        log.info("fiftyone.build_patch_similarity: backend=%s patches=%s samples=%d", backend, patches_field, len(emb))
+        return brain_key
+
+    def has_embeddings(self, embeddings_field: str = _EMB_FIELD) -> bool:
+        """True iff at least one detection already carries a crop embedding (so the operator can skip the
+        expensive compute_embeddings when DINO vectors are already present)."""
+        ds = self._dataset()
+        for s in ds.iter_samples():
+            field = s[_DET_FIELD]
+            if field is not None:
+                for det in field.detections:
+                    if det.has_field(embeddings_field) and det.get_field(embeddings_field) is not None:
+                        return True
+        return False
+
     def samples(self) -> Iterable[SampleRow]:
         ds = self._dataset()
         for s in ds.iter_samples():

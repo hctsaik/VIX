@@ -33,6 +33,13 @@ def _delta_cell(delta_ap, n_gt):
     if n_gt is not None and n_gt < _MIN_SUPPORT:
         return f"{'+' if delta_ap > 0 else ''}{delta_ap} (n少不穩)"
     return f"+{delta_ap} ↑" if delta_ap > 0 else (f"{delta_ap} ↓" if delta_ap < 0 else "0 →")
+def _img_cell(r) -> str:
+    """The image column: show a human-readable filename (the pipeline attaches `file`) instead of the
+    raw 64-char vix_hash, which is both unreadable and un-clickable. Falls back to a short hash."""
+    if r.get("file"):
+        return r["file"]
+    h = str(r.get("id", ""))
+    return h if len(h) <= 16 else h[:12] + "…"
 _CLOSENESS_LEGEND = "closeness = 對該類失敗區的 cosine 鄰近度(0–1,僅排序用,非機率);已解決的候選已標記,不需重做。"
 _WRONGNESS_LEGEND = "wrongness = conf × 超出該類嵌入門檻的程度(排序用,非機率);knn_dist>dist_thr 即翻盤依據。"
 # a 'label' queue's "hit" == "a human acted on it", so its hit-rate is identically its coverage —
@@ -124,7 +131,7 @@ def render_weakness_report(data: dict) -> str:
         L.append("| 影像 | 類別 | conf | 型態 |")
         L.append("|---|---|---|---|")
         for r in cw:
-            L.append(f"| {r['id']} | {r.get('pred_class')} | {r['conf']} | {r.get('fp_type', '-')} |")
+            L.append(f"| {_img_cell(r)} | {r.get('pred_class')} | {r['conf']} | {r.get('fp_type', '-')} |")
         L.append("")
 
     ov = data.get("overturns") or []
@@ -135,7 +142,7 @@ def render_weakness_report(data: dict) -> str:
         L.append("| 影像 | 類別 | conf | knn_dist | dist_thr | wrongness |")
         L.append("|---|---|---|---|---|---|")
         for r in ov:
-            L.append(f"| {r['id']} | {r.get('pred_class')} | {r['conf']} | {r.get('knn_dist')} | {r.get('dist_thr')} | {round(r['wrongness'], 2)} |")
+            L.append(f"| {_img_cell(r)} | {r.get('pred_class')} | {r['conf']} | {r.get('knn_dist')} | {r.get('dist_thr')} | {round(r['wrongness'], 2)} |")
         L.append("")
 
     q = data.get("queue") or {}
@@ -318,7 +325,7 @@ def render_weakness_report_html(data: dict) -> str:
             h.append("<h2 id='confident-wrong'>最「自信卻錯」(GT 證實的誤報)</h2><table>"
                      "<tr><th>影像</th><th>類別</th><th>conf</th><th>型態</th></tr>")
         for r in cw:
-            h.append(f"<tr><td>{_esc(r['id'])}</td><td>{_esc(r.get('pred_class'))}</td>"
+            h.append(f"<tr><td>{_esc(_img_cell(r))}</td><td>{_esc(r.get('pred_class'))}</td>"
                      f"<td>{_esc(r['conf'])}</td><td>{_esc(r.get('fp_type','-'))}</td></tr>")
         h.append("</table>")
 
@@ -328,7 +335,7 @@ def render_weakness_report_html(data: dict) -> str:
         h.append(f"<p class='legend'>{_esc(_WRONGNESS_LEGEND)}</p><table>"
                  "<tr><th>影像</th><th>類別</th><th>conf</th><th>knn_dist</th><th>dist_thr</th><th>wrongness</th></tr>")
         for r in ov:
-            h.append(f"<tr><td>{_esc(r['id'])}</td><td>{_esc(r.get('pred_class'))}</td><td>{_esc(r['conf'])}</td>"
+            h.append(f"<tr><td>{_esc(_img_cell(r))}</td><td>{_esc(r.get('pred_class'))}</td><td>{_esc(r['conf'])}</td>"
                      f"<td>{_esc(r.get('knn_dist'))}</td><td>{_esc(r.get('dist_thr'))}</td><td>{_esc(round(r['wrongness'], 2))}</td></tr>")
         h.append("</table>")
 
@@ -368,3 +375,96 @@ def render_weakness_report_html(data: dict) -> str:
 
     h.append("</body></html>")
     return "".join(h)
+
+
+# --- panel-optimized markdown (FiftyOne in-App report; redesigned for clarity, multi-agent) ----------
+# The full .md (render_weakness_report) and .html are for files; FiftyOne's panel md view renders
+# #/## as giant headers, so the panel needs its own compact, plain-language, well-ranked layout:
+# emoji health badge (not a giant header), uniform #### sections with --- rules, one-line caveats,
+# verdict->table->context order, trimmed (no duplicated queue/hit-rate; consistency to 3 cols),
+# numeric columns right-aligned, plain-language glosses + a tiny glossary footnote.
+_BADGE = {"RED": "🔴", "AMBER": "🟠", "GREEN": "🟢"}
+
+
+def _fn_summary(r) -> str:
+    fnt = r.get("fn_types") or {}
+    return " / ".join(f"{n} {t}" for t, n in sorted(fnt.items(), key=lambda kv: -kv[1])) or "-"
+
+
+def render_weakness_report_panel(data: dict) -> str:
+    s = data.get("summary") or {}
+    health = s.get("health", "?")
+    unver = bool(data.get("reference_unverified"))
+    L: list[str] = []
+
+    # 1) the verdict, as an emoji badge (prominent without a giant header)
+    L.append(f"{_BADGE.get(health, '⚪')} **健康度:{health}** ｜ 最弱:{s.get('weakest') or '—'}")
+    if s.get("todo"):
+        L.append("**先做這個:** " + " ｜ ".join(s["todo"]))
+    chips = []
+    if data.get("mAP") is not None:
+        chips.append(f"`整體準度 mAP {data['mAP']}`")
+    if data.get("loc_gap") is not None:
+        chips.append(f"`框鬆度 loc_gap {data['loc_gap']}`")
+    if chips:
+        L.append(" ".join(chips))
+    # one-line caveats (only the load-bearing ones, compact)
+    if unver:
+        L.append("> ⚠ 參照=你匯入的標籤(未經 VIX 覆核);下面的「誤報」也可能是你漏標、模型其實對了。")
+    prov = data.get("provenance") or {}
+    if prov.get("comparable") is False:
+        L.append("> ⚠ 本期 eval set 與上次不同 → 不可直接比較(可能只是考卷變簡單)。")
+
+    # 2) per-class weakness table (the evidence)
+    pc = data.get("per_class") or []
+    if pc:
+        L.append("\n---\n\n#### 哪一類最弱 · 每類準度 AP(弱 → 強)")
+        has_delta = any("delta_ap" in r for r in pc)
+        if has_delta:
+            L.append("| 類別 | AP | Δ 同考卷 | 框數 | 常見漏抓 | 常被認成 |")
+            L.append("|---|--:|--:|--:|---|---|")
+            for r in pc:
+                L.append(f"| {r['cls']} | {r['ap']} | {_delta_cell(r.get('delta_ap'), r.get('n_gt'))} "
+                         f"| {r['n_gt']} | {_fn_summary(r)} | {r.get('top_confusion') or '—'} |")
+        else:
+            L.append("| 類別 | AP | 框數 | 常見漏抓 | 常被認成 |")
+            L.append("|---|--:|--:|---|---|")
+            for r in pc:
+                L.append(f"| {r['cls']} | {r['ap']} | {r['n_gt']} | {_fn_summary(r)} | {r.get('top_confusion') or '—'} |")
+
+    # 3) confusion (compact, inline)
+    conf = data.get("confusion") or []
+    if conf:
+        L.append("\n---\n\n#### 最常認錯(實際是前者,被當成後者)")
+        L.append(" · ".join(f"{pair} ({n})" for pair, n in conf[:8]))
+
+    # 4) confident-but-wrong + 5) GT-free overturns are rendered as CLICKABLE tables by the live App
+    # panel (VixReportPanel) — point『看圖』jumps straight to the image — so they're intentionally NOT
+    # duplicated here as static markdown. (The full weakness_report.md/.html keep the static tables.)
+    if data.get("confident_wrong"):
+        n = len(data["confident_wrong"])
+        head = ("模型很有把握、卻和你的標籤不符" if unver else "最自信卻錯(高信心誤報)")
+        L.append(f"\n---\n\n#### {head}:{n} 筆 → 見下方表格(點『看圖』直接跳到該張影像)")
+        if unver:
+            L.append("_可能是模型誤報,也可能是你漏標/標錯;type=background = 你這裡沒框。_")
+    if data.get("overturns"):
+        L.append(f"\n#### 高信心、但「長得不像該類」(無標準答案時用):{len(data['overturns'])} 筆 → 見下方表格")
+
+    # 6) consistency — slimmed to pair · verdict · action
+    cons = data.get("consistency") or []
+    if cons:
+        L.append("\n---\n\n#### 失敗成因(taxonomy 定義重疊 / model 模型沒學好 / label 標籤問題)")
+        L.append("| 類別對 | 判定 | 建議 |")
+        L.append("|---|---|---|")
+        for f in cons:
+            v = "representation-fixable" if f.get("representation_fixable") else f["verdict"]
+            L.append(f"| {f['pair'][0]}↔{f['pair'][1]} | **{v}** | {f.get('action', '')} |")
+
+    # 7) pointers + one footnote (no duplicated queue/hit-rate in the panel)
+    L.append("\n---")
+    L.append("_下方表格點『看圖』可直接跳到該張影像;要逐張確認 / 排除誤報,用『VIX:覆核佇列』面板。"
+             "完整候選清單見 weakness_worklist.csv。_")
+    L.append("_PROXY:未重訓,排名是優先順序的猜測、非實測 mAP 增益。"
+             "Δ 只在同一份固定考卷可比;框數 < 20 的 Δ 不穩故不標箭頭。_")
+    L.append("_名詞:AP=單類準度(0–1) ｜ mAP=各類平均 ｜ loc_gap=框鬆度 ｜ Δ=與上次的變化。_")
+    return "\n".join(L)

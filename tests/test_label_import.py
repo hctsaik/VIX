@@ -148,6 +148,36 @@ def test_export_then_import_roundtrip_identical_boxes(tmp_path):
     assert by["crack"].as_tuple() == pytest.approx((0.2, 0.3, 0.1, 0.1), abs=1e-6)
 
 
+def test_detect_format_yolo_voc_coco(tmp_path):
+    from vix.core.label_import import detect_format
+    # YOLO: labels/ + data.yaml
+    (tmp_path / "y" / "images").mkdir(parents=True); (tmp_path / "y" / "labels").mkdir()
+    _png(tmp_path / "y" / "images" / "a.png")
+    (tmp_path / "y" / "labels" / "a.txt").write_text("0 .5 .5 .2 .2", encoding="utf-8")
+    (tmp_path / "y" / "data.yaml").write_text("names: [pothole]", encoding="utf-8")
+    dy = detect_format(tmp_path / "y")
+    assert dy["fmt"] == "yolo" and dy["names"] == ["pothole"]
+    # VOC: annotations/*.xml
+    (tmp_path / "v" / "annotations").mkdir(parents=True)
+    (tmp_path / "v" / "annotations" / "a.xml").write_text(
+        "<annotation><size><width>10</width><height>10</height></size>"
+        "<object><name>car</name><bndbox><xmin>1</xmin><ymin>1</ymin><xmax>3</xmax><ymax>3</ymax></bndbox></object></annotation>",
+        encoding="utf-8")
+    dv = detect_format(tmp_path / "v")
+    assert dv["fmt"] == "voc" and dv["names"] == ["car"]
+    # COCO: instances.json
+    (tmp_path / "c").mkdir()
+    (tmp_path / "c" / "instances.json").write_text(json.dumps(
+        {"images": [{"id": 1, "file_name": "a.png", "width": 10, "height": 10}],
+         "annotations": [{"image_id": 1, "category_id": 1, "bbox": [1, 1, 2, 2]}],
+         "categories": [{"id": 1, "name": "dog"}]}), encoding="utf-8")
+    dc = detect_format(tmp_path / "c")
+    assert dc["fmt"] == "coco" and dc["json_path"] and dc["names"] == ["dog"]
+    # nothing -> None
+    (tmp_path / "empty").mkdir()
+    assert detect_format(tmp_path / "empty")["fmt"] is None
+
+
 def test_parse_labels_dispatch_voc(tmp_path):
     (tmp_path / "annotations").mkdir()
     _png(tmp_path / "a.png")

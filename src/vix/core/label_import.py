@@ -189,6 +189,62 @@ def voc_to_dets(xml_dir, image_dir=None) -> dict[str, list[Detection]]:
     return out
 
 
+def detect_format(folder) -> dict:
+    """Sniff a folder and figure out the label format + helpers, so the user only supplies the path.
+    Returns {"fmt": yolo|voc|coco|None, "json_path": str|None, "data_yaml": str|None, "names": list|None}.
+
+    Order: COCO (a *.json with images+annotations) > VOC (*.xml with a bndbox) > YOLO (labels/ or sibling
+    *.txt). For YOLO it also picks up a data.yaml's names; VOC/COCO class names come from the labels."""
+    folder = Path(folder)
+    out = {"fmt": None, "json_path": None, "data_yaml": None, "names": None}
+    # COCO: a json holding images[] + annotations[] (+ categories[])
+    for j in sorted(folder.rglob("*.json")):
+        try:
+            d = json.loads(j.read_text(encoding="utf-8-sig"))
+        except (ValueError, OSError):
+            continue
+        if isinstance(d, dict) and isinstance(d.get("annotations"), list) and isinstance(d.get("images"), list):
+            out.update(fmt="coco", json_path=str(j),
+                       names=[c["name"] for c in d.get("categories", [])] or None)
+            return out
+    # VOC: an xml with an <object>/<bndbox>
+    for x in sorted(folder.rglob("*.xml")):
+        try:
+            root = ET.parse(x).getroot()
+        except ET.ParseError:
+            continue
+        if root.find(".//bndbox") is not None:
+            names = sorted({o.findtext("name") for o in folder_objects(folder) if o.findtext("name")})
+            out.update(fmt="voc", names=names or None)
+            return out
+    # YOLO: a labels/ dir or any sibling .txt next to an image; names from data.yaml if present
+    has_txt = (folder / "labels").exists() or any(folder.rglob("*.txt"))
+    if has_txt:
+        dy = next((p for p in folder.rglob("*.yaml") if "data" in p.name.lower()), None) \
+            or next(iter(folder.rglob("*.yaml")), None)
+        names = None
+        if dy is not None:
+            try:
+                import yaml
+                names = yaml.safe_load(dy.read_text(encoding="utf-8")).get("names")
+            except (ValueError, OSError):
+                names = None
+        out.update(fmt="yolo", data_yaml=(str(dy) if dy else None), names=names)
+        return out
+    return out
+
+
+def folder_objects(folder):
+    """Yield all VOC <object> elements under a folder (for class-name discovery)."""
+    folder = Path(folder)
+    for x in sorted(folder.rglob("*.xml")):
+        try:
+            root = ET.parse(x).getroot()
+        except ET.ParseError:
+            continue
+        yield from root.findall("object")
+
+
 def parse_labels(folder, fmt: str, names=None, label_dir=None, json_path=None) -> dict[str, list[Detection]]:
     """Dispatch by format. ``folder`` is the image root; VOC looks in folder/annotations
     (or folder) for xml, COCO uses ``json_path`` (or an instances*.json under folder)."""

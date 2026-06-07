@@ -58,6 +58,21 @@ def test_export_after_diagnose_gives_diagnose_aware_error(tmp_path):
         export(ad, cfg, ["pothole"], tmp_path / "out")
 
 
+def test_import_labels_voc_images_in_sibling_dir(tmp_path):
+    # VOC layout: annotations/*.xml (bare <filename>) + images/*.png in a SEPARATE dir (patHole-style).
+    # The join must match labels to ingested images by filename, not a filesystem guess at the root.
+    (tmp_path / "images").mkdir(); (tmp_path / "annotations").mkdir()
+    (tmp_path / "images" / "potholes0.png").write_bytes(_PNG)
+    (tmp_path / "annotations" / "potholes0.xml").write_text(
+        "<annotation><filename>potholes0.png</filename><size><width>10</width><height>10</height></size>"
+        "<object><name>pothole</name><bndbox><xmin>1</xmin><ymin>1</ymin><xmax>5</xmax><ymax>5</ymax></bndbox></object></annotation>",
+        encoding="utf-8")
+    cfg = Config(workspace=tmp_path / "ws"); cfg.ensure_dirs()
+    ad = InMemoryAdapter()
+    res = import_labels(ad, cfg, tmp_path, fmt="auto")  # auto -> voc; images in sibling dir
+    assert res["n_images"] == 1 and res["n_boxes"] == 1 and res["classes"] == ["pothole"]
+
+
 def test_import_labels_custom_label_dir(tmp_path):
     # labels live in a non-standard dir (not sibling labels/) -> --label-dir must find them (docs promise this)
     (tmp_path / "images").mkdir()

@@ -114,28 +114,53 @@ def _report_md(ctx, regenerate=False):
     """Render the weakness report (per-class AP + consistency + hit-rate + TL;DR) as markdown for the
     panel. Reuses pipeline.weakness_report (the same tested artifact the CLI writes)."""
     cfg, ad = Config(), _adapter(ctx)
-    md_path = cfg.workspace / "weakness_report.md"
-    if regenerate or not md_path.exists():
+    panel_path = cfg.workspace / "weakness_report_panel.md"  # compact, panel-optimized layout
+    if regenerate or not panel_path.exists():
         try:
             pipeline.weakness_report(ad, cfg)
         except Exception as exc:  # noqa: BLE001 - surface the reason in-panel rather than crash the App
-            return f"# VIX 弱點報告\n\n產生失敗:`{exc}`\n\n需先有 golden,並(選用)`vix eval-ingest <val.jsonl>`。"
-    return md_path.read_text(encoding="utf-8") if md_path.exists() else "# VIX 弱點報告\n\n(尚無報告)"
+            return f"### VIX 弱點報告\n\n產生失敗:`{exc}`\n\n需先有 golden,並(選用)`vix eval-ingest <val.jsonl>`。"
+    return panel_path.read_text(encoding="utf-8") if panel_path.exists() else "### VIX 弱點報告\n\n(尚無報告)"
+
+
+def _panel_nav(ctx):
+    """Navigable rows (confident_wrong / overturns) for the report panel's CLICKABLE tables — written
+    by pipeline.weakness_report alongside the panel .md. Each row carries a readable `file` to show and
+    the `hash` to jump to. Empty (table hidden) for an old report with no sidecar."""
+    import json
+    p = Config().workspace / "weakness_report_panel.json"
+    if not p.exists():
+        return {"confident_wrong": [], "overturns": []}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - a malformed/partial sidecar must not crash the panel
+        return {"confident_wrong": [], "overturns": []}
 
 
 class VixReportPanel(foo.Panel):
     """In-App panel surfacing the VIX weakness/consistency report (Tier 2 GUI). Pure presentation over
-    pipeline.weakness_report — same audit-logged core the CLI uses."""
+    pipeline.weakness_report — same audit-logged core the CLI uses. The confident-wrong / overturn rows
+    are rendered as CLICKABLE tables (point『看圖』jumps the grid to that image) so a filename in the
+    report links straight back to its picture; zero logic here (nav reuses _sample_id_for_hash)."""
 
     @property
     def config(self):
         return foo.PanelConfig(name="vix_report", label="VIX: 弱點/一致性報告", surfaces="grid")
 
+    def _refresh(self, ctx, regenerate=False):
+        ctx.panel.state.md = _report_md(ctx, regenerate=regenerate)
+        nav = _panel_nav(ctx)
+        cw, ov = nav.get("confident_wrong") or [], nav.get("overturns") or []
+        ctx.panel.state.cw = cw
+        ctx.panel.data.cw = cw       # TableView binds to the data path
+        ctx.panel.state.ov = ov
+        ctx.panel.data.ov = ov
+
     def on_load(self, ctx):
-        ctx.panel.state.md = _report_md(ctx)
+        self._refresh(ctx)
 
     def on_regen(self, ctx):
-        ctx.panel.state.md = _report_md(ctx, regenerate=True)
+        self._refresh(ctx, regenerate=True)
 
     def on_worklist(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
@@ -145,12 +170,46 @@ class VixReportPanel(foo.Panel):
             ctx.panel.state.md = (f"# VIX 弱點報告\n\n標記工作清單失敗:`{exc}`\n\n"
                                   "需先有 golden,並(選用)`vix eval-ingest <val.jsonl>`。")
             return
-        ctx.panel.state.md = _report_md(ctx)
+        self._refresh(ctx)
         ctx.ops.reload_dataset()
+
+    def _jump(self, ctx, rows):
+        """Open the clicked row's image (filename -> picture). Uses open_sample so the picture pops in
+        the App's sample modal OVER whatever you're looking at — set_view only filtered the grid behind
+        this panel (you're on the panel tab, so you'd see nothing change)."""
+        idx = ctx.params.get("row")
+        if isinstance(idx, int) and 0 <= idx < len(rows):
+            sid = _sample_id_for_hash(ctx, rows[idx].get("hash"))
+            if sid:
+                ctx.ops.open_sample(id=sid)
+
+    def on_inspect_cw(self, ctx):
+        self._jump(ctx, ctx.panel.state.cw or [])
+
+    def on_inspect_ov(self, ctx):
+        self._jump(ctx, ctx.panel.state.ov or [])
 
     def render(self, ctx):
         panel = types.Object()
         panel.md(ctx.panel.state.md or "_載入中…_", name="report")
+        cw = ctx.panel.state.cw or []
+        if cw:
+            t = types.TableView()
+            t.add_column("file", label="影像")
+            t.add_column("pred_class", label="類別")
+            t.add_column("conf", label="信心")
+            t.add_column("fp_type", label="型態")
+            t.add_row_action("inspect", self.on_inspect_cw, label="看圖", icon="visibility")
+            panel.list("cw", types.Object(), view=t, label="最自信卻錯(點『看圖』跳到該張)")
+        ov = ctx.panel.state.ov or []
+        if ov:
+            t2 = types.TableView()
+            t2.add_column("file", label="影像")
+            t2.add_column("pred_class", label="類別")
+            t2.add_column("conf", label="信心")
+            t2.add_column("wrongness", label="可疑度")
+            t2.add_row_action("inspect", self.on_inspect_ov, label="看圖", icon="visibility")
+            panel.list("ov", types.Object(), view=t2, label="高信心但長得不像該類(點『看圖』跳到該張)")
         panel.btn("regen", label="產生 / 重新整理報告", on_click=self.on_regen)
         panel.btn("worklist", label="標記工作清單(供 saved views 點選)", on_click=self.on_worklist)
         return types.Property(panel, view=types.GridView(height=100, width=100))
@@ -197,7 +256,7 @@ class VixQueuePanel(foo.Panel):
         h = self._row_hash(ctx)
         sid = _sample_id_for_hash(ctx, h) if h else None
         if sid:
-            ctx.ops.set_view(view=ctx.dataset.select(sid))  # drive the grid to the clicked sample
+            ctx.ops.open_sample(id=sid)  # pop the image in the App's sample modal (works from any tab)
 
     def _resolve(self, ctx, decision):
         h = self._row_hash(ctx)
@@ -427,7 +486,199 @@ class FlagLooseBoxes(foo.Operator):
         return types.Property(out)
 
 
+class BuildSimilarity(foo.Operator):
+    """Build the OBJECT-BOX (patch) similarity index so the App's native sort-by-similarity works on
+    YOUR boxes: pick a box → the magnifying glass → the whole dataset re-ranks by how that OBJECT looks
+    (DINOv2 crop embeddings, sklearn exact-NN — offline, no FiftyOne Enterprise). Object-level, not
+    whole-scene, so it finds similar *defects*, not just similar backgrounds. Zero new logic: reuses the
+    same DINO embeddings VIX already computes; only wraps fob.compute_similarity(patches_field=...)."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="build_similarity",
+                                  label="VIX: 建立相似搜尋索引(DINO,物件框)", dynamic=True)
+
+    def resolve_placement(self, ctx):
+        return types.Placement(
+            types.Places.SAMPLES_GRID_ACTIONS,
+            types.Button(label="VIX: 建立相似搜尋索引", icon="/assets/similar.svg", prompt=True),
+        )
+
+    def resolve_input(self, ctx):
+        ad = _adapter(ctx)
+        try:
+            have = ad.has_embeddings()
+        except Exception:  # noqa: BLE001
+            have = False
+        inputs = types.Object()
+        if have:
+            inputs.view("info", types.Notice(label="偵測框已有 DINO 嵌入 → 直接建索引(快)。"))
+        else:
+            try:
+                from vix.embedding.dinov2_torch import device_report
+                dev = device_report()
+            except Exception:  # noqa: BLE001
+                dev = "將自動偵測加速硬體(CUDA/MPS/CPU)"
+            inputs.view("warn", types.Notice(
+                label=f"偵測框尚無 DINO 嵌入,會先對每個框算 DINOv2。{dev}。"
+                      "GPU 上很快;純 CPU 整個資料集可能數分鐘。完成後即可用原生『放大鏡』排相似。"))
+        return types.Property(inputs, view=types.View(label="建立相似搜尋索引(物件框 / DINOv2)"))
+
+    def execute(self, ctx):
+        cfg, ad = Config(), _adapter(ctx)
+        try:
+            if not ad.has_embeddings():        # one-time: embed every box crop with DINOv2 (real, offline)
+                ad.compute_embeddings(cfg.dinov2_model_key)
+            brain_key = ad.build_patch_similarity()   # sklearn exact-NN over the crop embeddings
+        except Exception as exc:  # noqa: BLE001 - missing deps / no detections -> friendly message
+            return {"error": f"建立失敗:{exc}"}
+        try:
+            ctx.ops.reload_dataset()
+            ctx.ops.notify("相似搜尋索引完成。到 Samples 分頁:勾選一個『框』(或在展開圖中選一個 label)"
+                           "→ 點工具列的放大鏡 → 全資料集會按該物件相似度重排。", variant="success")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"brain_key": brain_key,
+                "hint": "用法:Samples 分頁勾一個框 → 放大鏡(Sort by similarity)→ 看最像的物件。"
+                        "這是物件級(非整張圖),找的是長得像的瑕疵。"}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        r = ctx.results or {}
+        if r.get("error"):
+            out.str("error", label="錯誤")
+            return types.Property(out)
+        out.str("brain_key", label="索引名稱(brain key)")
+        out.str("hint", label="怎麼用")
+        return types.Property(out)
+
+
+class LoadDataset(foo.Operator):
+    """Load YOUR dataset from the App: point at a folder of images + their YOLO/VOC/COCO labels
+    (and optionally your model .pt), and VIX imports them into a FiftyOne dataset and switches to it.
+    GUI equivalent of `vix diagnose` / `vix import-labels` — same tested pipeline.* functions, same
+    honesty: imported labels are tagged an UNVERIFIED reference (provisional), never golden."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="load_dataset", label="VIX: 載入我的資料集(影像+標籤)", dynamic=True)
+
+    def resolve_placement(self, ctx):
+        # A visible button in the grid toolbar (no need to press ` and search). Clicking opens the form.
+        return types.Placement(
+            types.Places.SAMPLES_GRID_ACTIONS,
+            types.Button(label="VIX: 載入我的資料集", icon="/assets/folder.svg", prompt=True),
+        )
+
+    def resolve_input(self, ctx):
+        inputs = types.Object()
+        inputs.str("folder", required=True, label="影像資料夾路徑",
+                   description="貼上資料夾路徑即可 — VIX 會自動判斷 YOLO / VOC / COCO 與類別名稱")
+        inputs.str("weights", required=False, label="(選填)你的模型 .pt — 填了就順便跑模型弱點評估")
+        return types.Property(inputs, view=types.View(label="載入我的資料集(只要資料夾,自動判斷格式)"))
+
+    def execute(self, ctx):
+        folder = (ctx.params.get("folder") or "").strip().strip('"')
+        if not folder or not Path(folder).exists():
+            return {"error": f"找不到資料夾:{folder!r}"}
+        weights = (ctx.params.get("weights") or "").strip().strip('"') or None
+        name = "".join(c if (c.isalnum() or c in "-_") else "_" for c in Path(folder).name) or "vix"
+        cfg, ad = Config(), FiftyOneAdapter(Config(), dataset_name=name)
+        try:
+            if weights:  # Tier A: auto-detect format/names + run YOUR model + write the weakness report
+                res = pipeline.diagnose(ad, cfg, folder, labels_fmt="auto", weights=weights)
+                imp = res["import"]
+            else:        # just load the labels so you can browse them (format auto-detected)
+                imp = pipeline.import_labels(ad, cfg, folder, fmt="auto")
+        except Exception as exc:  # noqa: BLE001 - bad path / no labels found -> friendly message
+            return {"error": f"載入失敗:{exc}"}
+        try:
+            ctx.ops.open_dataset(name)             # switch the App to the freshly loaded dataset
+            ctx.ops.notify(f"已載入 {imp['n_images']} 張 / {imp['n_boxes']} 框 → dataset『{name}』", variant="success")
+            if weights:
+                ctx.ops.open_panel("vix_report")  # show the weakness report panel
+        except Exception:  # noqa: BLE001
+            pass
+        return {"dataset": name, "n_images": imp["n_images"], "n_boxes": imp["n_boxes"],
+                "classes": ", ".join(imp.get("classes", [])) or "-",
+                "hint": f"已切到 dataset『{name}』。匯入標籤為未覆核參照(非 golden)。"
+                        + ("已開弱點報告面板。" if weights else "想跑模型評估?重跑並填 .pt 路徑。")}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        r = ctx.results or {}
+        if r.get("error"):  # only show fields that have a value (avoids "No value provided" on success)
+            out.str("error", label="錯誤")
+            return types.Property(out)
+        out.str("dataset", label="載入到 dataset")
+        out.int("n_images", label="影像數")
+        out.int("n_boxes", label="標註框數")
+        out.str("classes", label="類別")
+        out.str("hint", label="提示")
+        return types.Property(out)
+
+
+class DeleteDataset(foo.Operator):
+    """Delete the CURRENTLY OPEN FiftyOne dataset from the App (symmetric to LoadDataset). Requires an
+    explicit confirm checkbox. Only removes the FiftyOne/Mongo dataset records — your image and label
+    files on disk are never touched (VIX is read-only over your data). After delete, switches to another
+    remaining dataset."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="delete_dataset", label="VIX: 刪除目前的 dataset", dynamic=True)
+
+    def resolve_placement(self, ctx):
+        return types.Placement(
+            types.Places.SAMPLES_GRID_ACTIONS,
+            types.Button(label="VIX: 刪除目前的 dataset", icon="/assets/trash.svg", prompt=True),
+        )
+
+    def resolve_input(self, ctx):
+        name = ctx.dataset.name if ctx.dataset else ""
+        inputs = types.Object()
+        inputs.view("warn", types.Notice(
+            label=f"將永久刪除 dataset『{name}』。只刪 FiftyOne 記錄,你的影像/標籤檔不受影響(可重新載入)。"))
+        inputs.bool("confirm", label=f"我確定要刪除『{name}』", default=False, required=True)
+        return types.Property(inputs, view=types.View(label=f"刪除 dataset『{name}』"))
+
+    def execute(self, ctx):
+        import fiftyone as fo
+        name = ctx.dataset.name if ctx.dataset else None
+        if not name:
+            return {"error": "目前沒有開啟的 dataset"}
+        if not ctx.params.get("confirm"):
+            return {"error": "未確認:請勾選「我確定要刪除」再執行"}
+        try:
+            fo.delete_dataset(name)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"刪除失敗:{exc}"}
+        remaining = list(fo.list_datasets())
+        try:
+            if remaining:
+                ctx.ops.open_dataset(remaining[0])
+            ctx.ops.notify(f"已刪除 dataset『{name}』(你的檔案不受影響)", variant="success")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"deleted": name, "switched_to": (remaining[0] if remaining else "(已無其他 dataset)"),
+                "note": "只刪 FiftyOne 記錄;磁碟上的影像/標籤未更動。"}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        r = ctx.results or {}
+        if r.get("error"):
+            out.str("error", label="錯誤")
+            return types.Property(out)
+        out.str("deleted", label="已刪除")
+        out.str("switched_to", label="已切換到")
+        out.str("note", label="說明")
+        return types.Property(out)
+
+
 def register(p):
+    p.register(LoadDataset)
+    p.register(DeleteDataset)
+    p.register(BuildSimilarity)
     p.register(ConfirmGolden)
     p.register(DismissFalseAlarm)
     p.register(ExplainSample)

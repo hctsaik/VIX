@@ -36,6 +36,7 @@ NAV = [
     ("進階 (需 DINOv2 / App)", [
         ("audit.html", "稽核標籤本身", "B"),
         ("app.html", "在 App 裡覆核", "B"),
+        ("similarity.html", "找相似的物件 (DINO)", "B"),
     ]),
     ("觀念 / 參考", [
         ("honesty.html", "誠實邊界與限制", ""),
@@ -126,6 +127,7 @@ Tier A 模型評估:mAP@0.5=0.7234  loc_gap=0.04  per-class AP={'pothole': 0.723
 <a href="loop.html"><b>修了有沒有幫助?</b><span>用凍結 eval set 看 per-class Δ</span></a>
 <a href="audit.html"><b>稽核標籤本身</b><span>用 DINOv2 嵌入找疑似標錯</span></a>
 <a href="app.html"><b>在 App 裡覆核</b><span>FiftyOne 視覺化點選工作流</span></a>
+<a href="similarity.html"><b>找相似的物件</b><span>選一個框→放大鏡,DINO 物件級相似(免 Enterprise)</span></a>
 </div>
 <div class="warn"><b>一句話誠實聲明:</b>你<b>匯入的標籤是「未覆核的參照」</b>,不是真理。報告裡的「誤報」有可能其實是<b>你的標籤漏框</b>而模型是對的。詳見 <a href="honesty.html">誠實邊界</a>。</div>
 """
@@ -339,6 +341,40 @@ vix app                               # 開 FiftyOne + @vix/review 外掛</code>
 <div class="ref">圖解走查見 <a href="../EMBEDDINGS_HOWTO.html">EMBEDDINGS_HOWTO.html</a>。</div>
 """
 
+similarity_body = """
+<div class="note"><span class="tag b">Tier B</span> 在 App 裡點 <b>Similarity Search</b> 看到「<b>Upgrade to FiftyOne Enterprise</b>」?那個<b>面板</b>是付費功能 —— 但「按相似度搜尋」這個<b>能力</b>在開源版就有,而且 VIX 用你已經算好的 <b>DINOv2 物件嵌入</b>讓它變成<b>物件級</b>的(找長得像的<b>瑕疵</b>,不是只找像的整張背景)。離線、不需 Enterprise、不需外部向量資料庫。</div>
+
+<h2 class="sec">關鍵:比的是「框裡的物件」,不是「整張圖」</h2>
+<p>相似度準不準,取決於你<b>拿什麼去比</b>:</p>
+<table>
+<tr><th>比較對象</th><th>找到的是</th><th>對找瑕疵</th></tr>
+<tr><td>整張圖(scene-level)</td><td>構圖 / 光線 / 路面像的<b>照片</b></td><td>會被背景主導 → 較不準</td></tr>
+<tr><td><b>物件框(object-level,VIX 用這個)</b></td><td>那個<b>缺陷本身</b>長得像的</td><td>找相似瑕疵 / 找漏標 / 找重複 → 準</td></tr>
+</table>
+<p>VIX 對<b>每個框的裁切區</b>算 DINOv2 嵌入,索引就建在這些<b>物件向量</b>上(<code>patches_field</code>),所以「相似」= 物件相似。底層用 <b>sklearn 精確最近鄰</b>(exact NN),不是近似 —— 排序就是真正的 cosine 最近鄰。</p>
+
+<h2 class="sec">① 建立索引(一次)</h2>
+<p><b>App 裡(最省事):</b>格狀檢視工具列點 <b>🔎 VIX: 建立相似搜尋索引</b> 按鈕(或按 <kbd>`</kbd> 搜 <code>build_similarity</code>)。框還沒有 DINO 嵌入時,它會先離線算一次;之後重點按也只會更新索引。</p>
+<div class="tip"><b>自動偵測加速硬體:</b>算嵌入前 VIX 會自動偵測並使用最快的裝置 —— <b>CUDA(NVIDIA)→ MPS(Apple)→ CPU</b>,並印出用了哪個(例:「偵測到 NVIDIA GPU → 使用 cuda 加速」)。有 GPU 時很快;純 CPU 整個資料集可能數分鐘(每框約零點幾秒)。要強制指定可設環境變數 <code>VIX_DINOV2_DEVICE=cuda|mps|cpu</code>。</div>
+<p><b>CLI 等價:</b></p>
+<pre><code>vix similarity      # 對每個框算 DINOv2 嵌入(若還沒) + 建立物件框相似索引</code></pre>
+<figure><img src="img/sim_build.jpg" alt="建立相似搜尋索引按鈕與完成訊息"><figcaption>工具列的「建立相似搜尋索引」按鈕;完成後 App 會提示用放大鏡排相似。</figcaption></figure>
+
+<h2 class="sec">② 用:選一個框 → 放大鏡 → 全資料集按相似排</h2>
+<ol class="steps">
+<li>到 <b>Samples</b> 分頁,<b>勾選一個框</b>(在格狀檢視選一張並選取它的 label,或在展開的單張圖裡點一個 label)。</li>
+<li>點工具列的 <b>放大鏡(Sort by similarity)</b>。</li>
+<li>整個資料集會<b>按該物件的相似度重新排序</b> —— 最像的排最前面。很適合:同一種瑕疵一次撈齊、找你可能漏標的同類、找重複。</li>
+</ol>
+<figure><img src="img/sim_sorted.jpg" alt="按物件相似度排序後的結果"><figcaption>選一個 pothole 框、按放大鏡後,資料集依「這個坑洞長得多像」重排 —— 全離線、用 VIX 的 DINOv2 物件嵌入,免 Enterprise。</figcaption></figure>
+
+<h2 class="sec">誠實邊界</h2>
+<div class="warn"><b>需要嵌入:</b>這是 <span class="tag b">Tier B</span> 功能,要算 DINOv2 物件嵌入(第一次會下載一次權重)。Tier-A 的 <code>vix diagnose</code> 不算嵌入,所以用這個前要先建索引。<br><br>
+<b>像素 fallback 不適合:</b><code>--adapter memory</code> 的像素嵌入只夠測試;真要找相似請用真 DINOv2(同 <a href="audit.html">標籤稽核</a>)。<br><br>
+<b>這不是分類器:</b>相似排序是「看起來多像」的<b>排序工具</b>,不對誰是同一類下結論 —— 由你看圖判斷。</div>
+<div class="check"><b>你現在能:</b>在 App 裡選一個瑕疵框、一鍵把「長得像它的」全撈到最前面 —— 用的是你自己的 DINO 嵌入,完全離線。</div>
+"""
+
 honesty_body = """
 <div class="note">VIX 的身分就是「<b>誠實邊界</b>」:它寧可說「我不知道」也不假裝。這頁把全站的誠實規則集中一處 —— 都和程式碼裡的行為一致。</div>
 
@@ -401,7 +437,8 @@ PAGES = [
     ("formats.html", "輸入格式 (YOLO / VOC / COCO)", "資料夾擺對位置,VIX 才找得到你的標籤。", formats_body, cta("report.html", "讀懂弱點報告", "產出報告後,逐區塊讀懂它。")),
     ("loop.html", "修了有沒有幫助?", "誠實的閉環:固定考卷,才能比較分數。", loop_body, cta("audit.html", "稽核標籤本身", "想直接檢查標籤對不對?用 DINOv2 嵌入稽核。")),
     ("audit.html", "稽核標籤本身", "用 DINOv2 嵌入找疑似標錯,不需要模型。", audit_body, cta("app.html", "在 App 裡覆核", "把這些訊號丟進 FiftyOne App,用點選的方式覆核。")),
-    ("app.html", "在 FiftyOne App 裡覆核", "把 VIX 的訊號丟進視覺化 App,用滑鼠點選覆核(真實操作截圖)。", app_body, cta("honesty.html", "誠實邊界與限制", "用之前,先了解 VIX 對你誠實的每一條規則。")),
+    ("app.html", "在 FiftyOne App 裡覆核", "把 VIX 的訊號丟進視覺化 App,用滑鼠點選覆核(真實操作截圖)。", app_body, cta("similarity.html", "找相似的物件", "選一個瑕疵框,一鍵把長得像的全撈出來(DINO,離線,免 Enterprise)。")),
+    ("similarity.html", "找相似的物件 (DINO)", "選一個框 → 放大鏡 → 全資料集按物件相似度重排。離線、免 FiftyOne Enterprise。", similarity_body, cta("honesty.html", "誠實邊界與限制", "用之前,先了解 VIX 對你誠實的每一條規則。")),
     ("honesty.html", "誠實邊界與限制", "VIX 的身分:寧可說「我不知道」也不假裝。", honesty_body, cta("reference.html", "參考與完整手冊", "需要每個細節?看完整 SOP 與 CLI。")),
     ("reference.html", "參考與完整手冊", "需要更深入時看這裡;CLI 一律以 vix --help 為準。", reference_body, ""),
 ]

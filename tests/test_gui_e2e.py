@@ -136,18 +136,42 @@ def test_gui05_queue_table_renders_rows(live):
 
 
 def test_gui06_queue_inspect_navigates_to_sample(live):
-    """GUI-06: inspect row -> ctx.ops.set_view is called with a view selecting EXACTLY that sample."""
+    """GUI-06: inspect row -> ctx.ops.open_sample pops EXACTLY that sample's image in the modal (works
+    from the panel tab; set_view only filtered the hidden grid behind it)."""
     p = PLUGIN.VixQueuePanel()
     ctx = _ctx(live.ds)
     p.on_load(ctx)
-    target = ctx.panel.state.rows[0]["id"]
+    target = ctx.panel.state.rows[0]["id"]                 # vix_hash of the clicked row
     ctx.params = {"row": 0}
     p.on_inspect(ctx)
-    setviews = [c for c in ctx.ops.calls if c[0] == "set_view"]
-    assert len(setviews) == 1
-    view = setviews[0][2].get("view")                      # the actual arg passed to set_view
-    assert [s["vix_hash"] for s in view] == [target]       # the view selects only the clicked sample
+    opens = [c for c in ctx.ops.calls if c[0] == "open_sample"]
+    assert len(opens) == 1
+    assert opens[0][2].get("id") == _sid(live.ds, target)  # opens exactly the clicked sample's image
     assert not _reviews(live.cfg)                          # navigation is read-only
+
+
+def test_gui_build_similarity_patch_index(live):
+    """Similarity-A: BuildSimilarity creates the OBJECT-BOX (patch) index over DINO crop embeddings so
+    the App's native sort-by-similarity ranks by object look, not whole scene. Idempotent; read-only."""
+    op = PLUGIN.BuildSimilarity()
+    before = len(_reviews(live.cfg))
+    out = op.execute(_ctx(live.ds))                                   # embeddings already present -> just indexes
+    assert out.get("brain_key") == "vix_patch_sim" and not out.get("error")
+    live.ds.reload()
+    assert "vix_patch_sim" in live.ds.list_brain_runs()
+    info = live.ds.get_brain_info("vix_patch_sim")
+    assert getattr(info.config, "patches_field", None) == "yolo_detections"   # OBJECT-level, not whole-image
+    out2 = op.execute(_ctx(live.ds))                                  # idempotent: re-click replaces, no crash
+    assert out2.get("brain_key") == "vix_patch_sim"
+    assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)  # index build writes no review decision
+
+
+def test_adapter_patch_similarity_and_has_embeddings(live):
+    """Adapter seam: build_patch_similarity returns the patch brain key; has_embeddings detects the
+    per-detection DINO vectors (so the operator can skip the expensive recompute)."""
+    assert live.ad.has_embeddings() is True
+    bk = live.ad.build_patch_similarity()
+    assert bk == "vix_patch_sim" and bk in live.ds.list_brain_runs()
 
 
 def test_gui07_queue_confirm_golden_one_event_and_drops(live):
@@ -193,9 +217,34 @@ def test_gui02_report_panel_renders_markdown(live):
     ctx = _ctx(live.ds)
     before = len(_reviews(live.cfg))
     p.on_load(ctx)
-    assert ctx.panel.state.md and "YOLO 弱點報告" in ctx.panel.state.md
+    assert ctx.panel.state.md and "健康度" in ctx.panel.state.md  # compact panel layout leads with the verdict badge
     assert "PROXY" in ctx.panel.state.md                    # honest framing preserved on the GUI surface
     assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg) and not _log(live.cfg).is_truncated()
+
+
+def test_gui02b_report_filename_links_to_image(live):
+    """GUI-02b: a filename row in the report panel is CLICKABLE — 看圖 drives the grid to that image
+    (the owner's 'can I link a filename back to its picture?' ask). Read-only; writes nothing; chain intact."""
+    p = PLUGIN.VixReportPanel()
+    ctx = _ctx(live.ds, params={"row": 0})
+    before = len(_reviews(live.cfg))
+    # a navigable confident-wrong row (eval-derived in production; here seeded to a real sample's hash)
+    ctx.panel.state.cw = [{"file": "rev1.png", "hash": "rev1", "pred_class": "a", "conf": 0.9, "fp_type": "-"}]
+    p.on_inspect_cw(ctx)
+    opens = [c for c in ctx.ops.calls if c[0] == "open_sample"]
+    assert opens, "看圖 must open the clicked image in the sample modal"  # the filename links back to the picture
+    assert opens[0][2].get("id") == _sid(live.ds, "rev1")                 # opens exactly that image
+    assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)      # navigation is read-only
+
+
+def test_gui02c_report_bad_row_navigates_nowhere(live):
+    """GUI-02c: a stale/unknown filename row no-ops (never crashes, never set_view to nothing)."""
+    p = PLUGIN.VixReportPanel()
+    ctx = _ctx(live.ds, params={"row": 0})
+    ctx.panel.state.cw = [{"file": "gone.png", "hash": "no_such_hash", "pred_class": "a", "conf": 0.9}]
+    p.on_inspect_cw(ctx)                                                  # must not raise
+    assert not [c for c in ctx.ops.calls if c[0] == "open_sample"]        # unknown hash -> open nothing
+    assert _chain_ok(live.cfg)
 
 
 def test_gui03_report_regen_appends_audit(live):
@@ -205,7 +254,7 @@ def test_gui03_report_regen_appends_audit(live):
     before = len(_events(live.cfg, "weakness_report"))
     p.on_regen(ctx)
     assert len(_events(live.cfg, "weakness_report")) == before + 1
-    assert ctx.panel.state.md and "YOLO 弱點報告" in ctx.panel.state.md
+    assert ctx.panel.state.md and "健康度" in ctx.panel.state.md  # compact panel layout leads with the verdict badge
     assert _chain_ok(live.cfg) and not _log(live.cfg).is_truncated()
 
 
@@ -284,12 +333,12 @@ def test_s6_explain_no_selection_friendly_error(live):
 
 
 def test_s7_inspect_stale_hash_is_noop(live):
-    """S7: inspect a hash not in the dataset -> no set_view, no crash, no write, chain valid (degrade path)."""
+    """S7: inspect a hash not in the dataset -> no open_sample, no crash, no write, chain valid (degrade path)."""
     p = PLUGIN.VixQueuePanel()
     before = len(_reviews(live.cfg))
     ctx = _ctx(live.ds, params={"id": "does-not-exist"})
     p.on_inspect(ctx)  # must not raise
-    assert not any(c[0] == "set_view" for c in ctx.ops.calls)
+    assert not any(c[0] == "open_sample" for c in ctx.ops.calls)
     assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)
 
 

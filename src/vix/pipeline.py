@@ -106,7 +106,7 @@ def ingest(
     return n_new, n_skipped
 
 
-def import_labels(adapter, cfg, folder, fmt="yolo", names=None, batch="import",
+def import_labels(adapter, cfg, folder, fmt="auto", names=None, batch="import",
                   as_="reference", json_path=None, label_dir=None):
     """Import an EXISTING labelled dataset's ground truth (the on-ramp seam).
 
@@ -118,11 +118,28 @@ def import_labels(adapter, cfg, folder, fmt="yolo", names=None, batch="import",
     ``Tag.PROVISIONAL`` (a diagnosis-only reference that NEVER feeds calibrate/route/gate/
     snapshot/export — those read GOLDEN); ``as_='eval'`` tags ``Tag.EVAL``. Promotion to
     golden is only via the human-confirm path."""
-    from .core.label_import import parse_labels
+    from .core.label_import import detect_format, parse_labels
     from .core.manifest import compute_hash
 
+    if fmt in (None, "auto"):  # let the user just give a folder — sniff format + class names
+        det = detect_format(folder)
+        fmt = det["fmt"]
+        names = names or det["names"]
+        json_path = json_path or det["json_path"]
+        if not fmt:
+            raise ValueError("無法自動判斷標籤格式:資料夾裡找不到 YOLO labels/(.txt)、"
+                             "VOC annotations/(.xml) 或 COCO json")
     ingest(adapter, cfg, folder, batch)  # images in by content hash
     manifest = Manifest.load(cfg.manifest_path)
+    # Robust join: a label set references its image by name; the image may sit in a sibling images/ dir
+    # (e.g. VOC <filename> + images/). Map each label to the INGESTED image's content hash by exact path
+    # first (precise), else by basename, else by stem — so the layout doesn't matter.
+    by_base: dict[str, str] = {}
+    by_stem: dict[str, str] = {}
+    for e in manifest.entries():
+        sp = Path(e.src_path)
+        by_base.setdefault(sp.name, e.vix_hash)
+        by_stem.setdefault(sp.stem, e.vix_hash)
     parsed = parse_labels(folder, fmt, names=names, label_dir=label_dir, json_path=json_path)
     tag = Tag.EVAL if as_ == "eval" else Tag.PROVISIONAL
 
@@ -131,11 +148,14 @@ def import_labels(adapter, cfg, folder, fmt="yolo", names=None, batch="import",
     classes: set[str] = set()
     for img_path, dets in parsed.items():
         p = Path(img_path)
-        if not p.exists():
-            missing.append(img_path)
-            continue
-        h = compute_hash(p)
-        if not manifest.has(h):
+        h = None
+        if p.exists():
+            ch = compute_hash(p)
+            if manifest.has(ch):
+                h = ch
+        if h is None:  # fall back to matching by file name against the ingested images
+            h = by_base.get(p.name) or by_stem.get(p.stem)
+        if h is None:
             missing.append(img_path)  # label references an image not under the ingested folder
             continue
         adapter.set_detections(h, dets)
@@ -1171,7 +1191,7 @@ def eval_run(adapter, cfg, weights, imgsz=640, conf=0.05, iou_thr=0.5,
     return res
 
 
-def diagnose(adapter, cfg, folder, labels_fmt, weights=None, audit=False, names=None,
+def diagnose(adapter, cfg, folder, labels_fmt="auto", weights=None, audit=False, names=None,
              json_path=None, label_dir=None, out_path=None, batch="diagnose", iou_thr=0.5):
     """THE on-ramp: import the engineer's EXISTING labels + (optionally) run their model, and
     produce the weakness/attribution report — no golden/anchor/calibrate/route/gate worldview.
@@ -1183,6 +1203,20 @@ def diagnose(adapter, cfg, folder, labels_fmt, weights=None, audit=False, names=
     no gate-block on an unverified reference) applies."""
     if not weights and not audit:
         raise ValueError("diagnose 需要 --weights(Tier A:模型弱點)或 --audit(Tier B:標籤稽核)其一")
+    if labels_fmt in (None, "auto"):  # auto-detect so the caller can just give a folder
+        from .core.label_import import detect_format
+        det = detect_format(folder)
+        labels_fmt = det["fmt"]
+        json_path = json_path or det["json_path"]
+        names = names or det["names"]
+        if not labels_fmt:
+            raise ValueError("無法自動判斷標籤格式:找不到 YOLO labels/(.txt)、VOC annotations/(.xml) 或 COCO json")
+        if labels_fmt == "yolo" and names is None and weights:  # align numeric GT with the model's class names
+            try:
+                from ultralytics import YOLO
+                names = YOLO(str(weights)).names
+            except Exception:  # noqa: BLE001
+                pass
     imp = import_labels(adapter, cfg, folder, labels_fmt, names=names, batch=batch,
                         as_="reference", json_path=json_path, label_dir=label_dir)
     if imp["n_boxes"] == 0:  # honesty guard: a wrong folder layout must not look like "all clean"
@@ -1540,7 +1574,8 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     a proxy-stamped audit entry. Every 'go label these' ranking is a PROXY (no retraining)."""
     from collections import Counter
 
-    from .core.weakness_report import render_weakness_report, render_weakness_report_html
+    from .core.weakness_report import (
+        render_weakness_report, render_weakness_report_html, render_weakness_report_panel)
 
     data = {"mode": "gt_free", "mAP": None, "loc_gap": None, "per_class": [], "confusion": [],
             "confident_wrong": [], "overturns": [], "queue": {}, "consistency": [], "hit_rate": []}
@@ -1587,6 +1622,18 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
         data["overturns"] = hardneg(adapter, cfg, top=15, mode="gt_free", batch=batch)["rows"]
     except (ValueError, OSError):
         pass
+
+    # Attach a human-readable filename to each navigable row: the report otherwise shows a 64-char
+    # vix_hash (unreadable AND un-clickable). The hash stays as `id` so the App panel can jump to the
+    # image; `file` is display-only. Built once; never fail the report over a missing filename.
+    hash_to_file: dict[str, str] = {}
+    try:
+        for h, fp, *_ in adapter.samples():
+            hash_to_file[h] = Path(fp).name
+    except Exception:  # noqa: BLE001 - filename is display sugar
+        pass
+    for r in data["confident_wrong"] + data["overturns"]:
+        r["file"] = hash_to_file.get(r["id"], "")
 
     from .core.consistency import consistency_findings  # GT x embedding attribution (taxonomy/model/label)
     data["reference_unverified"] = reference_unverified  # honesty F1: imported labels are not human-confirmed
@@ -1673,6 +1720,19 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     out.write_text(render_weakness_report(data), encoding="utf-8")
     html_out = out.with_suffix(".html")  # browsable surface (Playwright-verifiable)
     html_out.write_text(render_weakness_report_html(data), encoding="utf-8")
+    out.with_name("weakness_report_panel.md").write_text(  # compact in-App panel layout
+        render_weakness_report_panel(data), encoding="utf-8")
+    # sidecar for the App panel's CLICKABLE tables: filename to read + hash to navigate to the image.
+    panel_nav = {
+        "confident_wrong": [{"file": r.get("file") or r["id"][:12], "hash": r["id"],
+                             "pred_class": r.get("pred_class"), "conf": r.get("conf"),
+                             "fp_type": r.get("fp_type") or "-"} for r in data["confident_wrong"]],
+        "overturns": [{"file": r.get("file") or r["id"][:12], "hash": r["id"],
+                       "pred_class": r.get("pred_class"), "conf": r.get("conf"),
+                       "wrongness": round(r["wrongness"], 2)} for r in data["overturns"]],
+    }
+    out.with_name("weakness_report_panel.json").write_text(
+        json.dumps(panel_nav, ensure_ascii=False), encoding="utf-8")
     DecisionLog(cfg.decision_log_path).append(
         "weakness_report", decision=data["summary"]["health"],
         extra={"mAP": data["mAP"], "health": data["summary"]["health"], "batch": batch,

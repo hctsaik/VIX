@@ -36,3 +36,4 @@ yolov8n.pt
 # beginner docs site: regenerable artifacts + verification scratch
 docs/guide/site/_artifacts/
 docs/guide/site/img/_verify_*.png
+docs/guide/site/img/_probe_*.png

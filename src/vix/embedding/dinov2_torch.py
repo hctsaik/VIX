@@ -9,11 +9,14 @@ adapter can use either interchangeably.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import numpy as np
 
 from .dinov2 import MODEL_KEY
+
+log = logging.getLogger(__name__)
 
 # VIX model_key -> (torch.hub entrypoint, embedding dim)
 _VARIANTS = {
@@ -28,11 +31,45 @@ def variant_for(model_key: str) -> tuple[str, int]:
     return _VARIANTS.get(model_key, ("dinov2_vitb14", 768))
 
 
+def detect_device(override: str | None = None) -> str:
+    """Pick the fastest available torch device BEFORE embedding: explicit override / VIX_DINOV2_DEVICE,
+    else CUDA (NVIDIA) → MPS (Apple Silicon) → CPU. Importing torch lazily keeps `import vix` light.
+    Returns a device string; callers can show it so the user knows whether acceleration kicked in."""
+    pref = (override or os.environ.get("VIX_DINOV2_DEVICE") or "").strip().lower()
+    if pref:
+        return pref
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+    except Exception:  # noqa: BLE001 - torch missing / probe failure -> safe CPU default
+        pass
+    return "cpu"
+
+
+def device_report(override: str | None = None) -> str:
+    """Human-readable one-liner: which device will be used + why (for CLI/operator 'detect before start')."""
+    dev = detect_device(override)
+    if dev == "cuda":
+        try:
+            import torch
+            name = torch.cuda.get_device_name(0)
+        except Exception:  # noqa: BLE001
+            name = "CUDA GPU"
+        return f"偵測到 NVIDIA GPU({name})→ 使用 cuda 加速"
+    if dev == "mps":
+        return "偵測到 Apple Silicon GPU → 使用 mps 加速"
+    return "未偵測到 GPU → 使用 CPU(較慢;可設 VIX_DINOV2_DEVICE 覆寫)"
+
+
 class DinoV2Embedder:
     """Loads DINOv2 once; `embed(crop)` returns its CLS embedding as a float np.ndarray. `crop` may be a
     PIL image or an np array (so it's drop-in for the zoo model's `embed(np.array(crop))` call site)."""
 
-    def __init__(self, model_key: str = MODEL_KEY, hub_dir: str | None = None):
+    def __init__(self, model_key: str = MODEL_KEY, hub_dir: str | None = None, device: str | None = None):
         import torch
         import torchvision.transforms as T
 
@@ -41,8 +78,15 @@ class DinoV2Embedder:
         hub_dir = hub_dir or os.environ.get("VIX_DINOV2_HUB_DIR")
         if hub_dir:
             torch.hub.set_dir(hub_dir)
-        self.model = torch.hub.load("facebookresearch/dinov2", entry, source="github",
-                                    verbose=False, trust_repo=True).eval()
+        self.device = detect_device(device)  # CUDA → MPS → CPU; honours VIX_DINOV2_DEVICE / device=
+        log.info("DINOv2 embedder: %s on device=%s", entry, self.device)
+        model = torch.hub.load("facebookresearch/dinov2", entry, source="github",
+                               verbose=False, trust_repo=True).eval()
+        try:
+            self.model = model.to(self.device)
+        except Exception:  # noqa: BLE001 - a bad/unavailable device must not hard-fail; fall back to CPU
+            self.device = "cpu"
+            self.model = model.to("cpu")
         self._tf = T.Compose([T.Resize((224, 224)), T.ToTensor(),
                               T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
 
@@ -70,9 +114,9 @@ class DinoV2Embedder:
             a = crop if crop.dtype == np.uint8 else crop.astype("uint8")
             crop = Image.fromarray(a)
         crop = crop.convert("RGB")
-        x = self._tf(crop).unsqueeze(0)
+        x = self._tf(crop).unsqueeze(0).to(self.device)
         with self._torch.no_grad():
-            return self.model(x)[0].cpu().numpy().astype(float)
+            return self.model(x)[0].detach().cpu().numpy().astype(float)
 
     def __enter__(self):
         return self
