@@ -81,13 +81,16 @@ vix app                               # 開 FiftyOne + @vix/review 外掛</code>
 <li>若你載入的校準是<b>別的資料集</b>算出來的,清單也會顯示「尚未就緒」—— 刻意如此,避免用錯基準排序。</li>
 </ul></div>
 
-<h2 class="sec">(選用)看 Embeddings 分群</h2>
-<p>在 App 的 Embeddings 面板可以框選一個群集、只看選取、檢視那些影像是什麼 —— 很適合找離群與重複。</p>
-<div class="gallery">
-<figure><img src="../img/raw_embeddings.png" alt="Embeddings 面板"></figure>
-<figure><img src="../img/step5.png" alt="框選群集"></figure>
-</div>
-<div class="ref">圖解走查見 <a href="../EMBEDDINGS_HOWTO.html">EMBEDDINGS_HOWTO.html</a>。</div>
+<h2 class="sec">看 Embeddings 散點圖(DINO,免 Enterprise)</h2>
+<div class="note">App 內建的 Embeddings 面板可以把資料畫成 2D 散點圖、框選(lasso)一群相似的物件 —— 很適合找離群與重複。<b>面板裡的「Create Embeddings」按鈕是 FiftyOne Enterprise 付費功能</b>,但<b>「看圖」本身在開源版就能用</b>:VIX 用你的 DINO 向量先把視覺化算好,你再開面板選它即可。</div>
+<ol class="steps">
+<li>工具列點 <b>VIX: 建立嵌入視覺化</b>(散點圖示)→ Execute。它會(必要時先算 DINO 嵌入,然後)用 UMAP 算好一份視覺化,名稱 <code>vix_umap</code>。CLI 等價:<code>vix visualize</code>。</li>
+<li>在分頁列按 <b>+</b> → 選 <b>Embeddings</b> 面板。</li>
+<li>面板左上的 <b>Select brain key</b> 下拉選 <b>vix_umap</b> → 出現 2D 散點圖。</li>
+<li>用滑鼠 <b>框選(lasso)</b> 一群點 → 只看選取 → 檢視那些是什麼影像(找離群、找同類、找重複)。</li>
+</ol>
+<div class="warn"><b>誠實提醒:</b>這張圖用的是你自己的 <b>DINOv2 向量</b>(非 Enterprise、非外部服務);第一次若還沒有嵌入會先離線算一次(會自動偵測 GPU/CPU)。</div>
+<div class="ref">舊版圖解走查見 <a href="../EMBEDDINGS_HOWTO.html">EMBEDDINGS_HOWTO.html</a>。</div>
 
 <div class="cta"><h3>下一步</h3><p>選一個瑕疵框,一鍵把長得像的全撈出來(DINO,離線,免 Enterprise)。</p><a href="similarity.html">→ 找相似的物件</a></div>
 <footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·

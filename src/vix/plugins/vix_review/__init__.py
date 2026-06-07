@@ -580,6 +580,71 @@ class BuildSimilarity(foo.Operator):
         return types.Property(out)
 
 
+class ComputeVisualization(foo.Operator):
+    """Build the Embeddings VISUALIZATION (UMAP of your DINOv2 vectors) so the App's native Embeddings
+    panel plots an interactive 2D map you can lasso-select — the OSS replacement for the Enterprise-gated
+    'Create Embeddings' button. Zero new logic: computes DINO embeddings if missing, then
+    adapter.compute_visualization (brain_key vix_umap). Offline, no zoo model."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="compute_visualization",
+                                  label="VIX: 建立嵌入視覺化(DINO/UMAP)", dynamic=True)
+
+    def resolve_placement(self, ctx):
+        return types.Placement(
+            types.Places.SAMPLES_GRID_ACTIONS,
+            types.Button(label="VIX: 建立嵌入視覺化", icon="/assets/scatter.svg", prompt=True),
+        )
+
+    def resolve_input(self, ctx):
+        ad = _adapter(ctx)
+        try:
+            have = ad.has_embeddings()
+        except Exception:  # noqa: BLE001
+            have = False
+        inputs = types.Object()
+        if have:
+            inputs.view("info", types.Notice(label="偵測框已有 DINO 嵌入 → 直接算 UMAP(快)。"))
+        else:
+            try:
+                from vix.embedding.dinov2_torch import device_report
+                dev = device_report()
+            except Exception:  # noqa: BLE001
+                dev = "將自動偵測加速硬體(CUDA/MPS/CPU)"
+            inputs.view("warn", types.Notice(
+                label=f"偵測框尚無 DINO 嵌入,會先算一次 DINOv2。{dev}。完成後到 Embeddings 面板看 2D 散點圖。"))
+        return types.Property(inputs, view=types.View(label="建立嵌入視覺化(DINO / UMAP)"))
+
+    def execute(self, ctx):
+        cfg, ad = Config(), _adapter(ctx)
+        try:
+            if not ad.has_embeddings():     # one-time DINOv2 crop embeddings (per-sample mean is what UMAP uses)
+                ad.compute_embeddings(cfg.dinov2_model_key)
+            brain_key = ad.compute_visualization()   # UMAP -> vix_umap (no zoo model; uses our vectors)
+        except Exception as exc:  # noqa: BLE001 - missing deps / no detections -> friendly message
+            return {"error": f"建立失敗:{exc}"}
+        try:
+            ctx.ops.open_panel("Embeddings")  # surface the native OSS Embeddings panel; harmless if unsupported
+            ctx.ops.notify("嵌入視覺化完成。開『Embeddings』面板、在 brain key 選『vix_umap』即可看 2D 散點圖、"
+                           "框選(lasso)一群相似的物件。", variant="success")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"brain_key": brain_key,
+                "hint": "用法:開 Embeddings 面板 → brain key 選 vix_umap → 框選(lasso)群集 → 只看選取。"
+                        "全離線、用你的 DINO 向量,不需 Enterprise。"}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        r = ctx.results or {}
+        if r.get("error"):
+            out.str("error", label="錯誤")
+            return types.Property(out)
+        out.str("brain_key", label="索引名稱(brain key)")
+        out.str("hint", label="怎麼用")
+        return types.Property(out)
+
+
 class FindSimilar(foo.Operator):
     """Find-similar using YOUR DINO index — the OSS replacement for the App's Enterprise-gated
     'Similarity Search' panel. Select an image (or a label) and this re-views the dataset as the
@@ -773,6 +838,7 @@ def register(p):
     p.register(DeleteDataset)
     p.register(BuildSimilarity)
     p.register(FindSimilar)
+    p.register(ComputeVisualization)
     p.register(ConfirmGolden)
     p.register(DismissFalseAlarm)
     p.register(ExplainSample)

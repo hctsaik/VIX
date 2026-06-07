@@ -194,6 +194,22 @@ def test_gui_find_similar_needs_index_and_selection(live):
     assert _chain_ok(live.cfg)
 
 
+def test_gui_compute_visualization_builds_umap(live):
+    """Embeddings-viz (OSS replacement for Enterprise 'Create Embeddings'): ComputeVisualization builds
+    a UMAP brain run (vix_umap) from the DINO vectors so the native Embeddings panel can plot it.
+    Read-only w.r.t. reviews; idempotent."""
+    op = PLUGIN.ComputeVisualization()
+    before = len(_reviews(live.cfg))
+    out = op.execute(_ctx(live.ds))
+    assert out.get("brain_key") == "vix_umap" and not out.get("error"), out
+    live.ds.reload()
+    assert "vix_umap" in live.ds.list_brain_runs()
+    info = live.ds.get_brain_info("vix_umap")
+    assert "Visualization" in info.config.cls or "umap" in info.config.cls.lower()  # a viz run, not similarity
+    assert op.execute(_ctx(live.ds)).get("brain_key") == "vix_umap"   # idempotent re-run, no crash
+    assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)
+
+
 def test_adapter_patch_similarity_and_has_embeddings(live):
     """Adapter seam: build_patch_similarity returns the patch brain key; has_embeddings detects the
     per-detection DINO vectors (so the operator can skip the expensive recompute)."""

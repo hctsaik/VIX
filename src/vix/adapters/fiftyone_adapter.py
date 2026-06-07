@@ -279,11 +279,33 @@ class FiftyOneAdapter(DatasetAdapter):
         return out
 
     def compute_visualization(self, embeddings_field: str = _EMB_FIELD) -> str:
+        """UMAP 2D projection of the per-sample DINOv2 embedding -> the OSS App's native Embeddings
+        panel plots it (pick brain_key 'vix_umap') with lasso-select, fully offline. The in-App
+        'Create Embeddings' button is FiftyOne-Enterprise-gated; this builds the run from code instead.
+        Idempotent: replaces any prior run so the operator can be re-clicked."""
         import fiftyone.brain as fob
 
-        fob.compute_visualization(
-            self._dataset(), embeddings=embeddings_field, method="umap", brain_key="vix_umap"
-        )
+        ds = self._dataset()
+        if "vix_umap" in ds.list_brain_runs():
+            ds.delete_brain_run("vix_umap")
+        # one vector per sample (UMAP is sample-level): use the sample-level field if present, else the
+        # mean of the per-detection crop embeddings. Pass an explicit array so brain uses OUR vectors
+        # (never a zoo model — same reason as build_patch_similarity).
+        vecs = []
+        for s in ds.iter_samples():
+            v = s.get_field(embeddings_field) if s.has_field(embeddings_field) else None
+            if v is None:
+                field = s[_DET_FIELD]
+                dee = [d.get_field(embeddings_field) for d in (field.detections if field else [])
+                       if d.has_field(embeddings_field) and d.get_field(embeddings_field) is not None]
+                v = np.mean(np.vstack(dee), axis=0) if dee else None
+            vecs.append(None if v is None else np.asarray(v, dtype=float))
+        if not any(v is not None for v in vecs):
+            raise ValueError("找不到 DINO 嵌入;請先計算嵌入(vix embed / 建立相似索引)")
+        if any(v is None for v in vecs):
+            raise ValueError("部分樣本缺少嵌入,無法做整體視覺化;請先對全部樣本計算嵌入(vix embed)")
+        fob.compute_visualization(ds, embeddings=np.asarray(vecs, dtype=float), method="umap", brain_key="vix_umap")
+        log.info("fiftyone.compute_visualization: vix_umap (UMAP over %d samples)", len(vecs))
         return "vix_umap"
 
     def launch_app(self, saved_views: dict | None = None) -> None:

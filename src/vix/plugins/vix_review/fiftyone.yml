@@ -8,6 +8,7 @@ operators:
   - delete_dataset
   - build_similarity
   - find_similar
+  - compute_visualization
   - confirm_golden
   - dismiss_false_alarm
   - explain_sample
