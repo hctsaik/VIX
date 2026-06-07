@@ -1253,6 +1253,57 @@ def box_qa(adapter, cfg, top=50, min_support=8):  # T1c per-box geometry QA (rea
     return issues[:top]
 
 
+def box_tightness(adapter, cfg, model="mobile_sam.pt", limit=60, iou_thr=0.6, top=50):  # opt-in, needs SAM
+    """Pixel-level GT box-tightness audit via a SAM mask — the one check box_qa structurally can't do
+    (box_qa is geometry-only; loc_gap measures the MODEL's looseness, not the GT's). For each golden box
+    (sampled to `limit` for cost), prompt SAM with the box, take the object mask's tight box, and flag
+    boxes whose GT disagrees with the mask (IoU < iou_thr → loose/misaligned annotation). Opt-in: needs
+    `ultralytics` + a one-time SAM weights download; CPU ~1s/box. PROXY (the mask is a model's guess) —
+    returns a ranked suspect list, writes no tags/ledger, never auto-edits."""
+    import random
+
+    from PIL import Image
+
+    from .core.box_tightness import tightness
+    try:
+        from ultralytics import SAM
+    except ImportError as e:  # noqa: F841
+        raise ValueError("box-tightness 需要 ultralytics(含 SAM):pip install ultralytics")
+    sam = SAM(model)
+    golden = [(h, src, dets) for h, src, dets, t in adapter.samples() if Tag.GOLDEN in t]
+    if limit and len(golden) > limit:
+        golden = random.Random(0).sample(golden, limit)
+    out = []
+    for h, src, dets in golden:
+        try:
+            W, H = Image.open(src).size
+        except Exception:  # noqa: BLE001 - unreadable image -> skip
+            continue
+        gtb = [d.bbox.as_tuple() for d in dets]
+        boxes_px = [[(cx - w / 2) * W, (cy - hh / 2) * H, (cx + w / 2) * W, (cy + hh / 2) * H]
+                    for (cx, cy, w, hh) in gtb]
+        if not boxes_px:
+            continue
+        res = sam(src, bboxes=boxes_px, verbose=False)[0]
+        if res.masks is None:
+            continue
+        for i, (d, gb) in enumerate(zip(dets, gtb)):
+            if i >= len(res.masks.data):
+                break
+            mk = res.masks.data[i].cpu().numpy().astype(bool)
+            ys, xs = np.where(mk)
+            if len(xs) == 0:
+                continue
+            mb = (float((xs.min() + xs.max()) / 2 / W), float((ys.min() + ys.max()) / 2 / H),
+                  float((xs.max() - xs.min()) / W), float((ys.max() - ys.min()) / H))
+            t = tightness(gb, mb, iou_thr)
+            if t["loose"]:
+                out.append({"id": h, "label": d.label, **t})
+    out.sort(key=lambda r: r["iou"])
+    log.info("box_tightness: %d golden images sampled, %d loose boxes (SAM=%s)", len(golden), len(out), model)
+    return out[:top]
+
+
 def hardneg(adapter, cfg, top=50, mode="auto", batch=None):
     """Confidently-wrong mining — the "YOLO most confident yet wrong" weakness lens (ported from SAFE).
     mode 'auto': GT (confirmed eval-FPs ranked by conf) if eval_results.json has conf-bearing fp_detail,

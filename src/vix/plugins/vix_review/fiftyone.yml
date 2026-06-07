@@ -9,6 +9,7 @@ operators:
   - explain_sample
   - generate_weakness_report
   - flag_label_issues
+  - flag_loose_boxes
 panels:
   - vix_report
   - vix_queue

@@ -298,6 +298,10 @@ def _build_parser() -> argparse.ArgumentParser:
     seb.add_argument("--map-drop", type=float, default=0.02, help="max allowed overall mAP drop")
     sbq = sub.add_parser("box-qa", help="per-box geometry QA on golden boxes (degenerate/truncated/area/aspect outliers) — read-only")
     sbq.add_argument("--top", type=int, default=50)
+    sbt = sub.add_parser("box-tightness", help="opt-in pixel-level GT box-tightness vs a SAM mask (catches loose/misaligned boxes box-qa can't) — needs ultralytics SAM")
+    sbt.add_argument("--limit", type=int, default=60, help="sample at most N golden images (SAM is ~1s/box on CPU)")
+    sbt.add_argument("--iou-thr", type=float, default=0.6)
+    sbt.add_argument("--model", default="mobile_sam.pt")
     shn = sub.add_parser("hardneg", help="rank the detector's most confident-yet-wrong detections (GT eval-FP, or GT-free embedding overturn)")
     shn.add_argument("--top", type=int, default=50)
     shn.add_argument("--mode", choices=["auto", "gt", "gt_free"], default="auto")
@@ -835,6 +839,13 @@ def _main(argv: list[str] | None = None) -> int:
         b = pipeline.set_eval_baseline(adapter, cfg, protected=protected, map_drop_thr=args.map_drop)
         print(f"baseline mAP={b['mAP']} 已凍結(eval_set_hash={b['eval_set_hash']})")
         print(f"  保護類別={list(protected) or '(無)'};整體 mAP 掉> {args.map_drop} 或保護類別 AP 掉> {args.protect_drop} → 下次 gate NO-GO")
+
+    elif args.cmd == "box-tightness":
+        loose = pipeline.box_tightness(adapter, cfg, model=args.model, limit=args.limit, iou_thr=args.iou_thr)
+        for it in loose:
+            print(f"{it['id']}  IoU={it['iou']}  {it['label']}: {it['why']}")
+        print(f"({len(loose)} 個疑似太鬆/沒對齊的框;PROXY,需人工覆核,勿自動改框)" if loose
+              else "未發現明顯太鬆的框(或樣本不足)")
 
     elif args.cmd == "box-qa":
         issues = pipeline.box_qa(adapter, cfg, top=args.top)

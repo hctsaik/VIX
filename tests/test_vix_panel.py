@@ -48,6 +48,7 @@ def test_plugin_registers_panel():
     assert "VixReportPanel" in registered and "ConfirmGolden" in registered
     assert "VixQueuePanel" in registered  # P1: the clickable review-queue panel
     assert "GenerateWeaknessReport" in registered and "FlagLabelIssues" in registered  # GUI report/label-QA ops
+    assert "FlagLooseBoxes" in registered  # opt-in SAM box-tightness operator
 
 
 def test_new_operator_configs_and_output_schema():

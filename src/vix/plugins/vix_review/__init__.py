@@ -340,11 +340,54 @@ class FlagLabelIssues(foo.Operator):
         return types.Property(out)
 
 
+class FlagLooseBoxes(foo.Operator):
+    """Opt-in PIXEL-level box-tightness audit (the one check box_qa structurally can't do): prompts a
+    SAM mask per golden box and flags boxes whose GT doesn't hug the object (low IoU) as vixq:loose_box.
+    Needs ultralytics SAM (one-time weights download); SAM is ~1s/box on CPU so it samples. PROXY (the
+    mask is itself a model's guess) — tags suspects to review, never auto-edits the boxes."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="flag_loose_boxes", label="VIX: 標出太鬆的框(SAM,選用)", dynamic=True)
+
+    def resolve_input(self, ctx):
+        inputs = types.Object()
+        inputs.int("limit", default=40, label="抽樣張數(SAM 較慢,~1s/框)")
+        inputs.float("iou_thr", default=0.6, label="IoU 門檻(GT 框與物件遮罩低於此=太鬆)")
+        return types.Property(inputs, view=types.View(label="SAM 框緊度稽核(需 ultralytics SAM 權重)"))
+
+    def execute(self, ctx):
+        cfg, ad = Config(), _adapter(ctx)
+        try:
+            loose = pipeline.box_tightness(ad, cfg, limit=int(ctx.params.get("limit") or 40),
+                                           iou_thr=float(ctx.params.get("iou_thr") or 0.6))
+        except Exception as exc:  # noqa: BLE001 - missing SAM weights / deps surface as a friendly message
+            return {"error": f"需要 ultralytics SAM:{exc}"}
+        ids = {it["id"] for it in loose}
+        for h in ids:
+            try:
+                ad.apply_tags(h, ["vixq:loose_box"])
+            except Exception:  # noqa: BLE001
+                pass
+        ctx.ops.reload_dataset()
+        return {"loose_boxes": len(loose), "images": len(ids),
+                "hint": "篩 vixq:loose_box 逐張檢查並收緊框;PROXY(SAM 也是猜的),勿自動改框"}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        out.str("error", label="錯誤")
+        out.int("loose_boxes", label="疑似太鬆的框")
+        out.int("images", label="影像數")
+        out.str("hint", label="怎麼看")
+        return types.Property(out)
+
+
 def register(p):
     p.register(ConfirmGolden)
     p.register(DismissFalseAlarm)
     p.register(ExplainSample)
     p.register(GenerateWeaknessReport)
     p.register(FlagLabelIssues)
+    p.register(FlagLooseBoxes)
     p.register(VixReportPanel)
     p.register(VixQueuePanel)
