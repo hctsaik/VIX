@@ -45,6 +45,20 @@ def _selected_hashes(ctx):
     return out
 
 
+def _has_golden(ad) -> bool:
+    """True iff any sample is tagged golden — the label-audit operators scan golden only, so on a
+    freshly imported (provisional) dataset they'd otherwise return a misleading empty 'nothing found'."""
+    from vix.types import Tag
+    try:
+        return any(Tag.GOLDEN in set(t) for _h, _s, _d, t in ad.samples())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_NO_GOLDEN_AUDIT = ("沒有 golden 樣本可稽核(目前標籤多為未覆核 provisional,並非沒有問題)。"
+                    "請先選正確的圖按『✓ 確認正確樣本(golden)』,或用 CLI `vix diagnose --audit` 對匯入標籤做嵌入稽核。")
+
+
 def _sample_id_for_hash(ctx, h):
     """vix_hash -> FiftyOne sample id (inverse of _selected_hashes). The one bit of live-only glue
     the queue panel needs to navigate; kept tiny so it's the obvious thing to find if FiftyOne drifts.
@@ -548,6 +562,8 @@ class FlagLabelIssues(foo.Operator):
 
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
+        if not _has_golden(ad):  # honest: scope is golden-only; don't report "clean" on unscanned provisional
+            return {"label_suspect": 0, "box_issue": 0, "hint": _NO_GOLDEN_AUDIT}
 
         def _imgs(items):
             out = set()
@@ -600,6 +616,8 @@ class AuditLabelErrors(foo.Operator):
 
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
+        if not _has_golden(ad):  # golden-only scope: name the prerequisite instead of a misleading "未發現"
+            return {"n": 0, "rows": [], "hint": _NO_GOLDEN_AUDIT}
         try:
             issues = pipeline.audit_labels(ad, cfg)
         except Exception as exc:  # noqa: BLE001
@@ -647,6 +665,8 @@ class FlagLooseBoxes(foo.Operator):
 
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
+        if not _has_golden(ad):  # golden-only scope (parity with the other audit ops) — don't imply "boxes clean"
+            return {"loose_boxes": 0, "images": 0, "hint": _NO_GOLDEN_AUDIT}
         try:
             loose = pipeline.box_tightness(ad, cfg, limit=int(ctx.params.get("limit") or 40),
                                            iou_thr=float(ctx.params.get("iou_thr") or 0.6))
