@@ -45,6 +45,12 @@ class DatasetAdapter(ABC):
     def remove_tags(self, vix_hash: str, tags: list[str]) -> None:  # optional (un-reject / restore)
         raise NotImplementedError("This adapter cannot remove tags")
 
+    def encoder_fingerprint(self) -> dict:
+        """Identity of the encoder that produced this dataset's embeddings, for the audit truth.
+        Default: backend-only (gate fail-opens). Real adapters override with a behaviour probe."""
+        from ..core.encoder_fingerprint import encoder_fingerprint
+        return encoder_fingerprint({"backend": getattr(getattr(self, "cfg", None), "embedding_backend", None)})
+
     @abstractmethod
     def get_by_tag(self, tag: str) -> Iterable[tuple[str, str, list[Detection]]]:
         """Yield (vix_hash, src_path, detections) for samples carrying ``tag``."""

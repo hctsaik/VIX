@@ -131,6 +131,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("app", help="launch the FiftyOne review App")
 
     sa = sub.add_parser("audit-labels", help="find suspected label errors (kNN disagreement)")
+    sndl = sub.add_parser("near-dup-labels", help="causal-certain label errors: near-duplicate images with conflicting labels")
+    sndl.add_argument("--max-distance", type=float, default=0.03)
     sa.add_argument("--k", type=int, default=None)
     sa.add_argument("--top", type=int, default=20)
 
@@ -441,6 +443,13 @@ def _main(argv: list[str] | None = None) -> int:
         for i in issues[: args.top]:
             print(f"{i.id}: given={i.given_label} -> suggested={i.suggested_label} (disagree={i.disagreement:.2f})")
         print(f"{len(issues)} suspected label errors")
+
+    elif args.cmd == "near-dup-labels":
+        conflicts = pipeline.near_dup_label_conflicts(adapter, cfg, max_distance=args.max_distance)
+        for c in conflicts:
+            print(f"  衝突群 {c['ids']}  標註={c['labels']}")
+        print(f"{len(conflicts)} 個近重複但標註矛盾的群(因果確定至少一個標錯,需人工裁決)" if conflicts
+              else "未發現近重複標註矛盾")
 
     elif args.cmd == "dedup":
         groups = pipeline.dedup(adapter, cfg, args.max_distance)

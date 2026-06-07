@@ -148,6 +148,22 @@ def near_duplicate_groups(
     return [g for g in groups.values() if len(g) >= 2]
 
 
+def near_dup_label_conflicts(items: list[EmbItem], max_distance: float = 0.03) -> list[dict]:
+    """Near-duplicate groups whose members carry CONFLICTING labels — a causal-certain label error:
+    near-identical images cannot legitimately have different labels, so at least one annotation is wrong.
+    Tight ``max_distance`` (default 0.03) keeps it to genuinely near-identical pairs, not merely similar
+    ones. ADVISORY: surfaces the contradiction (which to review), never resolves it. Returns
+    [{"ids": [...], "labels": {label: count}}] sorted by group size."""
+    by_id = {it.id: it.label for it in items}
+    out = []
+    for g in near_duplicate_groups(items, max_distance):
+        labs = [by_id.get(i, "") for i in g]
+        if len(set(labs)) > 1:  # near-identical yet labelled differently => at least one is wrong
+            out.append({"ids": g, "labels": dict(Counter(labs))})
+    out.sort(key=lambda r: -len(r["ids"]))
+    return out
+
+
 def class_distribution(items: list[EmbItem]) -> dict[str, int]:
     return dict(Counter(it.label for it in items))
 

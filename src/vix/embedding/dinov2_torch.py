@@ -46,6 +46,24 @@ class DinoV2Embedder:
         self._tf = T.Compose([T.Resize((224, 224)), T.ToTensor(),
                               T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
 
+    def fingerprint_material(self) -> dict:
+        """Extra encoder-identity material for the audit fingerprint (best-effort; behaviour is captured
+        separately by a probe embedding). Weights digest is a cheap strided checksum, not a full byte hash."""
+        import torch
+        mat: dict = {"vix_tag": getattr(self, "_vix_tag", None), "embedding_dim": self.dim}
+        try:
+            mat["torch_version"] = torch.__version__
+            mat["device"] = str(next(self.model.parameters()).device.type)
+            mat["preproc"] = "resize224;imagenet-norm"
+            sd = self.model.state_dict()
+            meta = sorted((k, tuple(v.shape), str(v.dtype)) for k, v in sd.items())
+            strided = float(sum(float(v.detach().float().flatten()[::997].sum()) for v in sd.values()))
+            mat["weights_digest"] = __import__("hashlib").sha256(
+                (str(meta) + f"|{strided:.4f}").encode("utf-8")).hexdigest()[:16]
+        except Exception:  # noqa: BLE001
+            pass
+        return mat
+
     def embed(self, crop) -> np.ndarray:
         from PIL import Image
         if isinstance(crop, np.ndarray):  # adapter passes np.array(crop); np arrays also have a .size attr

@@ -145,7 +145,23 @@ class FiftyOneAdapter(DatasetAdapter):
                     vecs.append(emb)
                 if vecs:
                     s[_EMB_FIELD] = np.mean(np.vstack(vecs), axis=0).tolist()
-        log.info("fiftyone.compute_embeddings: done (%s)", tag)
+            # bind the encoder identity into the dataset (audit truth): a swapped/drifted encoder
+            # (re-pulled weights, torch upgrade, CPU<->GPU, changed preprocessing) changes this fingerprint
+            from ..core.encoder_fingerprint import encoder_fingerprint, probe_digest
+            material = {"backend": self.cfg.embedding_backend, "vix_tag": tag, "probe_digest": probe_digest(_emb)}
+            if self.cfg.embedding_backend != "pixel_fallback" and hasattr(model, "fingerprint_material"):
+                material.update(model.fingerprint_material())
+            fp = encoder_fingerprint(material)
+            ds.info["vix_encoder_fp"] = fp["fp"]
+            ds.info["vix_encoder_components"] = fp["components"]
+            ds.save()
+        log.info("fiftyone.compute_embeddings: done (%s, encoder_fp=%s)", tag, fp["fp"])
+
+    def encoder_fingerprint(self) -> dict:
+        """The encoder identity recorded at embed time (vix_encoder_fp in dataset.info), so calibrate/gate
+        can bind to and detect a changed encoder without reloading the model."""
+        info = self._dataset().info
+        return {"fp": info.get("vix_encoder_fp"), "components": info.get("vix_encoder_components", {})}
 
     def build_knn_index(self, embeddings_field: str = _EMB_FIELD) -> str:
         import fiftyone.brain as fob

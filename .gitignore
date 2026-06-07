@@ -31,3 +31,4 @@ Thumbs.db
 _dogfood_yolo/
 _dogfood_yolo_train.log
 yolov8n.pt
+*.pt

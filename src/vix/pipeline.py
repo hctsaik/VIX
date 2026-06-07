@@ -149,6 +149,10 @@ def calibrate(adapter: DatasetAdapter, cfg: Config) -> ThresholdPolicy:
         ref_snapshot=str(cfg.manifest_path),
     )
     policy.meta["embedding_backend"] = cfg.embedding_backend  # AI6: so route/gate can catch a backend mismatch
+    try:  # bind the ENCODER identity (weights/version/preprocessing/behaviour) into the audit truth — it
+        policy.meta["encoder_fp"] = adapter.encoder_fingerprint().get("fp")  # flows into thresholds.json
+    except Exception:  # noqa: BLE001                                         # -> snapshot content_hash
+        pass
     policy.save(cfg.thresholds_path)
     log.info("calibrate: %d classes -> %s", len(policy.thresholds), cfg.thresholds_path)
     return policy
@@ -378,6 +382,16 @@ def audit_labels(adapter, cfg, k=None):  # S2
     )
     log.info("audit_labels: %d suspected label errors", len(issues))
     return issues
+
+
+def near_dup_label_conflicts(adapter, cfg, max_distance=0.03):  # S2b: causal-certain label errors via near-dups
+    """Golden images that are near-duplicates (DINO) yet carry CONFLICTING labels — at least one is
+    mislabelled. Causal-certain (not a proxy): near-identical pixels can't legitimately differ in label.
+    Advisory — surfaces the contradiction to review, never auto-resolves."""
+    from .core.analytics import near_dup_label_conflicts as _conf
+    conflicts = _conf(_detection_items(adapter, want_tags=[Tag.GOLDEN]), max_distance)
+    log.info("near_dup_label_conflicts: %d conflicting near-dup groups", len(conflicts))
+    return conflicts
 
 
 def dedup(adapter, cfg, max_distance=0.05):  # S3
@@ -739,9 +753,21 @@ def pre_train_gate_stage(adapter, cfg, drift_triggered=None):  # U7
     backends.discard(None)
     backend_mixed = len(backends) > 1  # AI6: mixing pixel_fallback + DINOv2 makes thresholds/trends incomparable
 
-    # challenge-guard: opt-in mAP regression block (only when an eval result + a frozen baseline exist)
     extra_reasons: list[str] = []
     extra_checks: dict = {}
+    # encoder fingerprint: the encoder behind every PROXY number is now in the audit truth; if the data's
+    # current encoder differs from the one used to calibrate (swapped weights / torch upgrade / CPU<->GPU /
+    # re-pulled cache), the distance thresholds are invalid -> NO-GO. Fail-open when absent (legacy).
+    cal_fp = ThresholdPolicy.load(cfg.thresholds_path).meta.get("encoder_fp") if cfg.thresholds_path.exists() else None
+    try:
+        live_fp = adapter.encoder_fingerprint().get("fp")
+    except Exception:  # noqa: BLE001
+        live_fp = None
+    if cal_fp and live_fp and cal_fp != live_fp:
+        extra_reasons.append("資料目前的編碼器指紋與 calibrate 時不一致(權重/前處理/行為已改),距離門檻不可比;請以同一編碼器重新 vix embed + calibrate")
+        extra_checks["encoder_fp_mismatch"] = {"calibrated": cal_fp, "current": live_fp}
+
+    # challenge-guard: opt-in mAP regression block (only when an eval result + a frozen baseline exist)
     if cfg.eval_results_path.exists() and cfg.eval_baseline_path.exists():
         cur = json.loads(cfg.eval_results_path.read_text(encoding="utf-8"))
         base = json.loads(cfg.eval_baseline_path.read_text(encoding="utf-8"))
