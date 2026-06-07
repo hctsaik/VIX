@@ -306,7 +306,7 @@ class VixQueuePanel(foo.Panel):
         if ctx.panel.state.err:
             # honest banner INSTEAD of the table (no degenerate rows, no empty "No data" widget)
             panel.md(f"### ⚠ 覆核佇列尚未就緒\n\n{ctx.panel.state.err}", name="qerr")
-            panel.btn("refresh", label="重新整理佇列", on_click=self.on_refresh)
+            panel.btn("refresh", label="重新整理佇列", icon="refresh", variant="contained", on_click=self.on_refresh)
             return types.Property(panel, view=types.GridView(height=100, width=100))
         table = types.TableView()
         table.add_column("risk", label="風險")
@@ -316,7 +316,7 @@ class VixQueuePanel(foo.Panel):
         table.add_row_action("confirm", self.on_confirm, label="確認→golden", icon="check")
         table.add_row_action("dismiss", self.on_dismiss, label="誤報排除", icon="block")
         panel.list("rows", types.Object(), view=table)
-        panel.btn("refresh", label="重新整理佇列", on_click=self.on_refresh)
+        panel.btn("refresh", label="重新整理佇列", icon="refresh", variant="contained", on_click=self.on_refresh)
         return types.Property(panel, view=types.GridView(height=100, width=100))
 
 
