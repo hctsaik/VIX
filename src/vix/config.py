@@ -34,6 +34,9 @@ class Config:
 
     # --- model / algorithm (locked) ---
     dinov2_model_key: str = field(default_factory=lambda: _env("VIX_DINOV2_KEY", "dinov2-vitb14-torch"))
+    # torch.hub cache dir for the built-in DINOv2 (used when the FiftyOne zoo is unavailable / offline);
+    # point at a pre-populated cache for fully air-gapped runs, else torch downloads on first use.
+    dinov2_hub_dir: str | None = field(default_factory=lambda: _env("VIX_DINOV2_HUB_DIR", "") or None)
     embedding_dim: int = field(default_factory=lambda: _env_int("VIX_EMBED_DIM", 768))
     similarity_backend: str = field(default_factory=lambda: _env("VIX_SIM_BACKEND", "lancedb"))
     # which embedder actually produced the vectors — recorded in audit/report/export

@@ -96,26 +96,56 @@ class FiftyOneAdapter(DatasetAdapter):
         s[_DET_FIELD] = fo.Detections(detections=dets)
         s.save()
 
+    def _dino_model(self, model_key: str):
+        """Real DINOv2: FiftyOne Model Zoo if it loads, else the built-in torch.hub embedder (offline-
+        capable). Returns an object with `.embed(np_or_pil)` and a `with` context."""
+        try:
+            import fiftyone.zoo as foz
+            m = foz.load_zoo_model(model_key)
+            m._vix_tag = f"zoo:{model_key}"
+            return m
+        except Exception as e:  # noqa: BLE001 - zoo broken / model missing -> built-in DINOv2
+            log.warning("FiftyOne zoo unavailable (%s); using built-in torch.hub DINOv2",
+                        str(e).splitlines()[0][:100])
+            from ..embedding.dinov2_torch import DinoV2Embedder
+            m = DinoV2Embedder(model_key, hub_dir=getattr(self.cfg, "dinov2_hub_dir", None))
+            m._vix_tag = f"torch.hub:{model_key}"
+            return m
+
     def compute_embeddings(self, model_key: str = MODEL_KEY) -> None:
-        import fiftyone.zoo as foz
+        import contextlib
+
         from PIL import Image
 
+        if self.cfg.embedding_backend == "pixel_fallback":  # offline/no-GPU: cheap pixel embedding
+            from ..embedding.simple import pixel_embedding
+            model_cm: object = contextlib.nullcontext()
+            tag = "pixel_fallback"
+
+            def _emb(crop):
+                return np.asarray(pixel_embedding(crop), dtype=float).ravel()
+        else:  # real DINOv2 (zoo or built-in torch.hub)
+            model = self._dino_model(model_key)
+            model_cm = model
+            tag = getattr(model, "_vix_tag", model_key)
+
+            def _emb(crop):
+                return np.asarray(model.embed(np.array(crop)), dtype=float).ravel()
+
         ds = self._dataset()
-        model = foz.load_zoo_model(model_key)
-        with model:
+        with model_cm:
             for s in ds.iter_samples(autosave=True, progress=True):
                 if s[_DET_FIELD] is None:
                     continue
                 img = Image.open(s.filepath).convert("RGB")
                 vecs = []
                 for det in s[_DET_FIELD].detections:
-                    crop = crop_detection(img, _from_fo_bbox(det.bounding_box))
-                    emb = np.asarray(model.embed(np.array(crop)), dtype=float).ravel()
+                    emb = _emb(crop_detection(img, _from_fo_bbox(det.bounding_box)))
                     det[_EMB_FIELD] = emb.tolist()
                     vecs.append(emb)
                 if vecs:
                     s[_EMB_FIELD] = np.mean(np.vstack(vecs), axis=0).tolist()
-        log.info("fiftyone.compute_embeddings: done (%s)", model_key)
+        log.info("fiftyone.compute_embeddings: done (%s)", tag)
 
     def build_knn_index(self, embeddings_field: str = _EMB_FIELD) -> str:
         import fiftyone.brain as fob
