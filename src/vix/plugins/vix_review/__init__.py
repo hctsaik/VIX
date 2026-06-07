@@ -17,6 +17,8 @@ system — never by `import vix` or the test suite.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import fiftyone.operators as foo
 import fiftyone.operators.types as types
 
@@ -232,9 +234,117 @@ class VixQueuePanel(foo.Panel):
         return types.Property(panel, view=types.GridView(height=100, width=100))
 
 
+class GenerateWeaknessReport(foo.Operator):
+    """Pick an eval file in the App and generate the model-weakness report — the GUI equivalent of
+    `vix eval-ingest <val.jsonl>` + `vix weakness-report`. Zero new logic: calls the tested pipeline.*
+    and the existing vix_report panel renders the result."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="generate_weakness_report", label="VIX: 產生模型弱點報告(選 eval)",
+                                  dynamic=True)
+
+    def _candidates(self):
+        cfg = Config()
+        cands: set[str] = set()
+        for d in (cfg.workspace, Path.cwd()):
+            try:
+                cands |= {str(p) for p in Path(d).glob("*.jsonl")}
+            except Exception:  # noqa: BLE001
+                pass
+        return sorted(cands)
+
+    def resolve_input(self, ctx):
+        inputs = types.Object()
+        cands = self._candidates()
+        if cands:
+            inputs.enum("eval_file", cands, label="選一個 eval JSONL(每行 {vix_hash, gt, pred})",
+                        view=types.DropdownView())
+        inputs.str("custom_path", required=False, label="或自訂 eval JSONL 路徑(優先)")
+        return types.Property(inputs, view=types.View(label="產生模型弱點報告(eval-ingest → weakness-report)"))
+
+    def execute(self, ctx):
+        cfg, ad = Config(), _adapter(ctx)
+        path = (ctx.params.get("custom_path") or "").strip() or ctx.params.get("eval_file")
+        if not path or not Path(path).exists():
+            return {"error": f"找不到 eval 檔:{path!r}(需每行 {{vix_hash, gt, pred}} 的 JSONL)"}
+        try:
+            ev = pipeline.eval_ingest(ad, cfg, path)            # writes eval_results.json (tested)
+            wr = pipeline.weakness_report(ad, cfg)["data"]       # writes weakness_report.md/.html (tested)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"產生失敗:{exc}"}
+        try:
+            ctx.ops.open_panel("vix_report")  # surface the report; harmless if unsupported
+        except Exception:  # noqa: BLE001
+            pass
+        return {"mAP": ev.get("mAP"), "health": wr["summary"]["health"],
+                "weakest": wr["summary"].get("weakest") or "-",
+                "report": str(cfg.workspace / "weakness_report.md")}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        out.str("error", label="錯誤")
+        out.float("mAP", label="mAP@0.5")
+        out.str("health", label="健康度")
+        out.str("weakest", label="最弱類別")
+        out.str("report", label="報告檔(或開「VIX: 弱點/一致性報告」面板)")
+        return types.Property(out)
+
+
+class FlagLabelIssues(foo.Operator):
+    """One click: surface which golden images have likely-INACCURATE labels — suspected wrong class
+    (embedding-neighbour disagreement) and bad box geometry (degenerate/truncated/outlier) — by tagging
+    them vixq:label_suspect / vixq:box_issue so they become a filterable, clickable worklist in the App.
+    Zero new logic: calls the tested audit_labels + box_qa. Honest: these are PROXY suspicions to review,
+    never auto-edits. (Pixel-level box-tightness needs an optional SAM add-on — not included.)"""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="flag_label_issues", label="VIX: 標出疑似不準的標註", dynamic=True)
+
+    def execute(self, ctx):
+        cfg, ad = Config(), _adapter(ctx)
+
+        def _imgs(items):
+            out = set()
+            for it in items or []:
+                i = it.get("id") if isinstance(it, dict) else getattr(it, "id", None)
+                if i:
+                    out.add(str(i).split(":")[0])  # box/label ids are "<vix_hash>[:idx]"
+            return out
+        try:
+            label_susp = _imgs(pipeline.audit_labels(ad, cfg))   # suspected wrong CLASS (kNN disagreement)
+            box_susp = _imgs(pipeline.box_qa(ad, cfg))            # suspected bad BOX geometry
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"分析失敗:{exc}"}
+        for h in label_susp:
+            try:
+                ad.apply_tags(h, ["vixq:label_suspect"])
+            except Exception:  # noqa: BLE001
+                pass
+        for h in box_susp:
+            try:
+                ad.apply_tags(h, ["vixq:box_issue"])
+            except Exception:  # noqa: BLE001
+                pass
+        ctx.ops.reload_dataset()
+        return {"label_suspect": len(label_susp), "box_issue": len(box_susp),
+                "hint": "在 App 用 sample tags / saved view 篩 vixq:label_suspect、vixq:box_issue 逐張檢查並修正"}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        out.str("error", label="錯誤")
+        out.int("label_suspect", label="疑似標錯類別(張)")
+        out.int("box_issue", label="框幾何問題(張)")
+        out.str("hint", label="怎麼看")
+        return types.Property(out)
+
+
 def register(p):
     p.register(ConfirmGolden)
     p.register(DismissFalseAlarm)
     p.register(ExplainSample)
+    p.register(GenerateWeaknessReport)
+    p.register(FlagLabelIssues)
     p.register(VixReportPanel)
     p.register(VixQueuePanel)

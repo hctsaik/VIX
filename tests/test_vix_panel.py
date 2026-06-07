@@ -47,6 +47,20 @@ def test_plugin_registers_panel():
     m.register(_Collector())
     assert "VixReportPanel" in registered and "ConfirmGolden" in registered
     assert "VixQueuePanel" in registered  # P1: the clickable review-queue panel
+    assert "GenerateWeaknessReport" in registered and "FlagLabelIssues" in registered  # GUI report/label-QA ops
+
+
+def test_new_operator_configs_and_output_schema():
+    import fiftyone.operators.types as types
+    m = _load_plugin()
+    g, f = m.GenerateWeaknessReport(), m.FlagLabelIssues()
+    assert g.config.name == "generate_weakness_report" and f.config.name == "flag_label_issues"
+    # input + output render schemas serialize (catches API drift offline)
+
+    class _Ctx:
+        params: dict = {}
+    assert g.resolve_input(_Ctx()).to_json() and g.resolve_output(_Ctx()).to_json()
+    assert f.resolve_output(_Ctx()).to_json()
 
 
 def test_queue_panel_config():

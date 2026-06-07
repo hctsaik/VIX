@@ -531,6 +531,35 @@ def test_r2_queue_panel_row_fallback_to_id(live):
     assert p._row_hash(ctx) == h               # falls back to the id
 
 
+def test_op_generate_weakness_report(live):
+    """GUI 'generate model-weakness report' operator: pick an eval JSONL -> eval-ingest + weakness-report
+    (the in-App equivalent of `vix eval-ingest` + `vix weakness-report`); zero new core logic."""
+    box = [0.5, 0.5, 0.4, 0.4]
+    rows = [
+        {"vix_hash": "rev1", "gt": [{"label": "vert", "bbox": box}], "pred": [{"label": "vert", "bbox": box, "conf": 0.9}]},
+        {"vix_hash": "rev2", "gt": [{"label": "horiz", "bbox": box}], "pred": []},                       # missed
+        {"vix_hash": "cand_low", "gt": [], "pred": [{"label": "vert", "bbox": box, "conf": 0.85}]},      # background FP
+    ]
+    jl = live.cfg.workspace / "gui_eval.jsonl"
+    jl.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    out = PLUGIN.GenerateWeaknessReport().execute(_ctx(live.ds, params={"custom_path": str(jl)}))
+    assert "error" not in out and out.get("mAP") is not None and out.get("health")
+    assert live.cfg.eval_results_path.exists()
+    assert (live.cfg.workspace / "weakness_report.md").exists()
+    assert _chain_ok(live.cfg)
+
+
+def test_op_flag_label_issues(live):
+    """GUI 'flag inaccurate labels' operator: audit_labels + box_qa -> vixq:* tags; no crash, chain valid,
+    no review write (it's a read-only audit that only tags)."""
+    op = PLUGIN.FlagLabelIssues()
+    before = len(_reviews(live.cfg))
+    out = op.execute(_ctx(live.ds))
+    assert "error" not in out
+    assert isinstance(out["label_suspect"], int) and isinstance(out["box_issue"], int)
+    assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)  # audit only, no human-decision write
+
+
 def test_r2_saved_views_from_worklist_tags(live):
     """R2-35 (the saved-views-in-sidebar gap): a vixq:* worklist tag -> a NAMED saved view (the exact path
     `vix app` uses to build the clickable sidebar) that resolves to the tagged sample. Non-vacuous."""

@@ -7,6 +7,8 @@ operators:
   - confirm_golden
   - dismiss_false_alarm
   - explain_sample
+  - generate_weakness_report
+  - flag_label_issues
 panels:
   - vix_report
   - vix_queue
