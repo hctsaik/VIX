@@ -89,6 +89,155 @@ def _open_panel(app, panel_type):
     app.page.wait_for_timeout(7000)
 
 
+def _events(cfg, name):
+    from vix.core.decision_log import DecisionLog
+    return [r for r in DecisionLog(cfg.decision_log_path).read_all() if r.get("event") == name]
+
+
+def _dismiss_dialogs(pg):
+    """Close any operator-result dialog / modal left open by a prior test — otherwise the next ` press
+    is swallowed by the focused dialog and the operator browser never opens (sequencing bug, not a
+    product bug)."""
+    for _ in range(4):
+        pg.keyboard.press("Escape")
+        pg.wait_for_timeout(350)
+
+
+def _run_operator(app, name, select=None, post_wait=3500):
+    """Invoke an operator IN THE BROWSER via the ` operator browser, then Execute. Returns nothing;
+    callers assert the server-side effect (brain run / tag / ledger / session.view). `select` (a sample
+    id) is applied AFTER the spaces reset so the selection survives into the operator's ctx."""
+    pg = app.page
+    _dismiss_dialogs(pg)
+    app.session.spaces = app.fo.Space(children=[app.fo.Panel(type="Samples", pinned=True)])
+    pg.wait_for_timeout(1500)
+    # ensure the Samples grid is the active surface (a prior test may have left the Embeddings panel
+    # open, which swallows the ` operator-browser shortcut) — wait for the grid toolbar to be visible.
+    try:
+        pg.wait_for_selector("img[src*='folder.svg']", state="visible", timeout=15000)
+    except Exception:
+        pass
+    if select is not None:
+        app.session.selected = [select]
+        pg.wait_for_timeout(1500)
+    pg.keyboard.press("`"); pg.wait_for_timeout(1200)
+    pg.keyboard.type(name); pg.wait_for_timeout(1200)
+    pg.keyboard.press("Enter"); pg.wait_for_timeout(2500)
+    btn = pg.get_by_role("button", name=re.compile("execute|run|執行|送出", re.I))
+    (btn.first.click() if btn.count() else pg.keyboard.press("Enter"))
+    pg.wait_for_timeout(post_wait)
+
+
+def test_b6_all_vix_toolbar_buttons_present(app):
+    """B6: every VIX toolbar placement button registers a clickable icon in the live grid toolbar
+    (folder/trash/simindex/similar/check/ban/scatter). Catches a placement that silently fails to mount."""
+    app.session.spaces = app.fo.Space(children=[app.fo.Panel(type="Samples", pinned=True)])
+    app.page.wait_for_timeout(2500)
+    icons = ["folder.svg", "trash.svg", "simindex.svg", "similar.svg", "check.svg", "ban.svg", "scatter.svg"]
+    present = [i for i in icons if app.page.query_selector(f"img[src*='{i}']")]
+    app.page.screenshot(path=str(app.shots / "b6_toolbar.png"))
+    assert set(present) == set(icons), f"missing toolbar buttons: {set(icons) - set(present)}"
+
+
+def test_b7_build_similarity_creates_patch_index(app):
+    """B7: build_similarity executed in the browser builds the vix_patch_sim brain run (DINO patch index)."""
+    _run_operator(app, "build_similarity", post_wait=8000)
+    app.ds.reload()
+    assert "vix_patch_sim" in app.ds.list_brain_runs()
+
+
+def test_b8_find_similar_sets_similarity_view(app):
+    """B8: find_similar (needs vix_patch_sim from B7 + a selection) re-views the App as patches sorted by
+    similarity — the session view gains a SortBySimilarity stage. Driven via the real toolbar button
+    (prompt=False -> executes on the selection). Runs BEFORE compute_visualization, whose open_panel
+    would otherwise remount the toolbar mid-test."""
+    _dismiss_dialogs(app.page)
+    app.session.view = None                       # clear any leftover view from a prior test
+    app.session.spaces = app.fo.Space(children=[app.fo.Panel(type="Samples", pinned=True)])
+    app.page.wait_for_timeout(2500)
+    app.page.wait_for_selector("img[src*='similar.svg']", state="visible", timeout=20000)
+    s = app.ds.match({"vix_hash": "rev2"}).first() or app.ds.first()
+    app.session.selected = [s.id]
+    app.page.wait_for_timeout(2000)
+    try:  # the click fires find_similar -> set_view (view reload); the post-nav wait may reject even
+        app.page.locator("img[src*='similar.svg']").first.click(no_wait_after=True, timeout=10000, force=True)
+    except Exception:
+        pass
+    app.page.wait_for_timeout(8000)
+    stages = [type(st).__name__ for st in (app.session.view._stages if app.session.view else [])]
+    assert any("Similarity" in n for n in stages), f"no similarity stage in view: {stages}"
+    app.session.view = None  # restore for later tests
+
+
+def test_b10_dismiss_false_alarm_in_browser(app):
+    """B10: dismiss_false_alarm executed in the browser tags rev2 'rejected' + writes one false_alarm ledger event."""
+    rev = app.ds.match({"vix_hash": "rev2"}).first()
+    before = len(_reviews(app.cfg))
+    _run_operator(app, "dismiss_false_alarm", select=rev.id, post_wait=3500)
+    ok = False
+    for _ in range(15):
+        app.ds.reload()
+        if "rejected" in app.ds.match({"vix_hash": "rev2"}).first().tags:
+            ok = True; break
+        time.sleep(1)
+    assert ok, "dismiss did not tag rev2 rejected"
+    revs = _reviews(app.cfg)
+    assert len(revs) == before + 1 and revs[-1]["decision"] == "false_alarm"
+
+
+def test_b11_audit_label_errors_runs_in_browser(app):
+    """B11: audit_label_errors (DINO cross-class) runs in the browser without crashing and logs an
+    audit_labels event (vix_verify has 2 classes + embeddings)."""
+    before = len(_events(app.cfg, "audit_labels"))
+    _run_operator(app, "audit_label_errors", post_wait=5000)
+    assert len(_events(app.cfg, "audit_labels")) >= before + 1
+
+
+def test_b12_explain_sample_runs_in_browser(app):
+    """B12: explain_sample (drill-down) runs in the browser on a selection without crashing (read-only)."""
+    s = app.ds.match({"vix_hash": "rev1"}).first() or app.ds.first()
+    before = len(_reviews(app.cfg))
+    _run_operator(app, "explain_sample", select=s.id, post_wait=3500)
+    app.page.screenshot(path=str(app.shots / "b12_explain.png"))
+    assert len(_reviews(app.cfg)) == before  # read-only: writes no review event, didn't crash the App
+    assert app.page.locator('[data-cy="looker"], canvas, [data-cy="fo-grid"]').count() >= 1  # App still alive
+
+
+def test_b12z_compute_visualization_creates_umap(app):
+    """B12z: compute_visualization builds the vix_umap UMAP run (Embeddings panel). Runs AFTER the other
+    operator-browser tests because its open_panel('Embeddings') side-effect disrupts a following ` invoke;
+    the next test (b13 queue) opens its panel via the spaces API, which is unaffected."""
+    _run_operator(app, "compute_visualization", post_wait=8000)
+    app.ds.reload()
+    assert "vix_umap" in app.ds.list_brain_runs()
+
+
+def test_b13_queue_inspect_opens_sample_modal(app):
+    """B13: the vix_queue panel's 看圖 row-action opens the sample modal (open_sample) for a queued item."""
+    _dismiss_dialogs(app.page)
+    _open_panel(app, "vix_queue")
+    body = app.page.locator("body").inner_text()
+    if "尚未就緒" in body:
+        pytest.skip("queue disabled (no golden-with-embeddings in this run) — panel mounted honestly")
+    # the 看圖 row-action renders as an icon button; try several handles (role/title/text/visibility icon)
+    handle = None
+    for finder in [lambda: app.page.get_by_role("button", name=re.compile("看圖")),
+                   lambda: app.page.get_by_title(re.compile("看圖")),
+                   lambda: app.page.get_by_text("看圖", exact=False)]:
+        loc = finder()
+        if loc.count():
+            handle = loc.first; break
+    if handle is None:
+        handle = app.page.query_selector('svg[data-testid="VisibilityIcon"]')
+    if handle is None:
+        app.page.screenshot(path=str(app.shots / "b13_queue_norows.png"))
+        pytest.skip("queue 看圖 row-action not locatable (TableView icon-button rendering)")
+    handle.click()
+    app.page.wait_for_timeout(3500)
+    app.page.screenshot(path=str(app.shots / "b13_queue_inspect.png"))
+    assert app.page.query_selector('[data-cy="modal"], [data-cy="looker-modal"], [data-cy*="modal"]') is not None
+
+
 def test_b1_app_grid_renders_in_dom(app):
     """B1: the App serves the Mongo-backed dataset and the sample grid actually paints in the DOM."""
     assert app.ready, "App server did not become ready"
@@ -134,6 +283,7 @@ def test_b4_confirm_golden_in_browser_writes_one_ledger_event(app):
     """B4: execute confirm_golden IN THE BROWSER (operator browser via keyboard) -> rev1 gains 'golden'
     AND the DecisionLog gains exactly one review/confirmed event with a valid chain (ledger-anchored)."""
     # reset spaces to the grid so the operator browser targets the selection
+    _dismiss_dialogs(app.page)  # clear any operator-result dialog left open by a prior test
     app.session.spaces = app.fo.Space(children=[app.fo.Panel(type="Samples", pinned=True)])
     app.page.wait_for_timeout(2000)
     rev = app.ds.match({"vix_hash": "rev1"}).first()
