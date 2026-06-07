@@ -97,8 +97,31 @@ def pair_stats(emb_i: np.ndarray, emb_j: np.ndarray, k: int | None = None,
     }
 
 
+def _apply_reference_firewall(f: dict) -> dict:
+    """Honesty ruling F2: when the per-class reference is human-UNVERIFIED (imported labels, not
+    confirmed golden), VIX must NOT use the labels-under-audit as the trusted oracle to convict
+    them. Separability/clean (falsifiable geometry, claims nothing about label correctness) survive
+    unchanged; the label-trust verdicts are softened to watch/audit and never block a retrain."""
+    v = f["verdict"]
+    li, lj = f["pair"]
+    if v == "label_noise":  # pure circularity -> never fire on an unverified reference
+        f["verdict"] = "label_audit_needed"
+        f["action"] = (f"嵌入難分且與你的標籤分歧,但這些標籤未覆核 → 先人工覆核 {li}/{lj}"
+                       "(確認後升級為 golden 再判定是否標籤雜訊);現不宣稱標籤錯誤")
+    elif v == "taxonomy":
+        f["verdict"] = "taxonomy_watch"
+        f["action"] = (f"重疊與混淆一致,但參照標籤未覆核 → 僅監看 {li}/{lj};"
+                       "先覆核成 golden 再考慮 merge/重寫規則(勿做不可逆動作)")
+    elif v == "model":
+        f["verdict"] = "model_watch"
+        f["action"] = (f"{li}/{lj} 可分但模型混淆(參照未覆核)→ 監看;可沿邊界補資料,先覆核標籤再下結論")
+    f["reference_trusted"] = False
+    return f
+
+
 def _attribute(li: str, lj: str, *, ni: int, nj: int, k: int, sep_err: float, sep_ci: list,
-               O: float, O_ci: list, confusion: dict | None, n_gt: dict | None) -> dict:
+               O: float, O_ci: list, confusion: dict | None, n_gt: dict | None,
+               reference_trusted: bool = True) -> dict:
     """Directed i->j verdict from overlap O[i->j] (embedding) vs C[i->j] (model confusion)."""
     tier = _tier(min(ni, nj), ni + nj)
     n_gt_i = int((n_gt or {}).get(li, 0))
@@ -155,12 +178,15 @@ def _attribute(li: str, lj: str, *, ni: int, nj: int, k: int, sep_err: float, se
     else:
         f.update(verdict="taxonomy_watch",
                  action="訊號混合/證據不足:監看,勿做不可逆動作(無模型混淆時不可宣稱標籤雜訊)")
+    if not reference_trusted:  # imported/unverified reference -> firewall the label-trust verdicts
+        _apply_reference_firewall(f)
     return f
 
 
 def consistency_findings(emb_by_class: dict, confusion: dict | None = None,
                          n_gt: dict | None = None, max_pairs: int = 20,
-                         min_sep_report: float = 0.2, adapt_rescued: dict | None = None) -> list[dict]:
+                         min_sep_report: float = 0.2, adapt_rescued: dict | None = None,
+                         reference_trusted: bool = True) -> list[dict]:
     """Per class-pair attribution over golden embeddings (+ optional eval confusion).
     Orients each pair toward its stronger model-confusion direction. Keeps only actionable pairs
     (a verdict beyond 'clean', or sep_err high enough to be worth showing). Sorted worst-first.
@@ -184,7 +210,8 @@ def consistency_findings(emb_by_class: dict, confusion: dict | None = None,
             else:
                 li, lj, ni, nj, O, O_ci = ci, cj, st["ni"], st["nj"], st["O_ij"], st["O_ij_ci"]
             f = _attribute(li, lj, ni=ni, nj=nj, k=st["k"], sep_err=st["sep_err"], sep_ci=st["sep_ci"],
-                           O=O, O_ci=O_ci, confusion=confusion, n_gt=n_gt)
+                           O=O, O_ci=O_ci, confusion=confusion, n_gt=n_gt,
+                           reference_trusted=reference_trusted)
             if adapt_rescued is not None:
                 resc = adapt_rescued.get(frozenset(f["pair"]))
                 if resc is not None:

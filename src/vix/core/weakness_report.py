@@ -15,6 +15,24 @@ never proof that labelling raises mAP — stamped throughout.
 from __future__ import annotations
 
 _PROXY = "_(PROXY:未重訓,此為嫌疑/優先排序,非實測 mAP 增益)_"
+# Honesty F1: when the reference is the user's IMPORTED, human-unverified labels, FP/FN measure
+# "model vs your labels", NOT "model vs reality" — a "false positive" may be a missing/mislabeled GT box.
+_UNVERIFIED_REF = ("參照 = 你匯入的標籤(未經 VIX 覆核)。下方「誤報/漏報」是「模型 vs 你的標籤」的不一致,"
+                   "不是「模型 vs 真實世界」;一個「誤報」可能其實是你的標籤漏框/標錯而模型對了。"
+                   "要分辨是模型錯還是標籤錯,用 --audit(嵌入式標籤稽核)。")
+_BG_HEDGE = "(type=background = 你的標籤此處沒有框 → 可能模型幻覺,也可能是漏標的 GT)"
+_MIN_SUPPORT = 20  # below this n_gt, a per-class AP Δ is noise — show it WITHOUT a directional arrow (matches the gate)
+
+
+def _delta_cell(delta_ap, n_gt):
+    """Render a per-class AP Δ honestly: no ↑/↓ arrow on low-support classes (a +0.02 on n_gt=4
+    is regression-to-mean, not a move). Reuses the gate's min_support so the table can't imply a
+    confident gain the gate itself would only treat as advisory."""
+    if delta_ap is None:
+        return "-"
+    if n_gt is not None and n_gt < _MIN_SUPPORT:
+        return f"{'+' if delta_ap > 0 else ''}{delta_ap} (n少不穩)"
+    return f"+{delta_ap} ↑" if delta_ap > 0 else (f"{delta_ap} ↓" if delta_ap < 0 else "0 →")
 _CLOSENESS_LEGEND = "closeness = 對該類失敗區的 cosine 鄰近度(0–1,僅排序用,非機率);已解決的候選已標記,不需重做。"
 _WRONGNESS_LEGEND = "wrongness = conf × 超出該類嵌入門檻的程度(排序用,非機率);knn_dist>dist_thr 即翻盤依據。"
 # a 'label' queue's "hit" == "a human acted on it", so its hit-rate is identically its coverage —
@@ -52,6 +70,8 @@ def render_weakness_report(data: dict) -> str:
             L.append(">\n> **現在做這個:** " + " ｜ ".join(s["todo"]))
         L.append("")
     L.append(f"_{_PROXY.strip('_')};可分性綁定目前 embedding 空間。_\n")
+    if data.get("reference_unverified"):  # honesty F1
+        L.append(f"> ⚠ **{_UNVERIFIED_REF}**\n")
     bscope = f"　範圍:**batch {data['batch']}**(佇列/翻盤僅看這批)" if data.get("batch") else ""
     L.append("模式:**%s** %s%s\n" % (
         mode, "(有標註 val set → 以 GT 區塊為主)" if mode == "gt" else "(GT-free → 靠嵌入翻盤/代理訊號)", bscope))
@@ -66,13 +86,25 @@ def render_weakness_report(data: dict) -> str:
 
     pc = data.get("per_class") or []
     if pc:
+        has_delta = any("delta_ap" in r for r in pc)  # only when comparable to a prior run on the SAME eval set
         L.append("\n## 哪一類最弱(per-class AP,弱 → 強)\n")
-        L.append("| 類別 | AP | n_gt | 漏報型態(分佈) | 最常混淆成 |")
-        L.append("|---|---|---|---|---|")
-        for r in pc:
-            fnt = r.get("fn_types") or {}
-            fn_s = " / ".join(f"{n} {t}" for t, n in sorted(fnt.items(), key=lambda kv: -kv[1])) or "-"
-            L.append(f"| {r['cls']} | {r['ap']} | {r['n_gt']} | {fn_s} | {r.get('top_confusion') or '-'} |")
+        if has_delta:
+            L.append("_Δ = 與上次「同一 eval set」執行相比的 AP 變化(你於外部重訓;非 VIX 造成)。"
+                     "改了 eval set 的標籤會使其不可比 → 用凍結的 held-out eval set 才看得到 Δ。_")
+            L.append("| 類別 | AP | Δ(同 eval set) | n_gt | 漏報型態(分佈) | 最常混淆成 |")
+            L.append("|---|---|---|---|---|---|")
+            for r in pc:
+                fnt = r.get("fn_types") or {}
+                fn_s = " / ".join(f"{n} {t}" for t, n in sorted(fnt.items(), key=lambda kv: -kv[1])) or "-"
+                dcell = _delta_cell(r.get("delta_ap"), r.get("n_gt"))
+                L.append(f"| {r['cls']} | {r['ap']} | {dcell} | {r['n_gt']} | {fn_s} | {r.get('top_confusion') or '-'} |")
+        else:
+            L.append("| 類別 | AP | n_gt | 漏報型態(分佈) | 最常混淆成 |")
+            L.append("|---|---|---|---|---|")
+            for r in pc:
+                fnt = r.get("fn_types") or {}
+                fn_s = " / ".join(f"{n} {t}" for t, n in sorted(fnt.items(), key=lambda kv: -kv[1])) or "-"
+                L.append(f"| {r['cls']} | {r['ap']} | {r['n_gt']} | {fn_s} | {r.get('top_confusion') or '-'} |")
         L.append("")
 
     conf = data.get("confusion") or []
@@ -83,8 +115,12 @@ def render_weakness_report(data: dict) -> str:
 
     cw = data.get("confident_wrong") or []
     if cw:
-        L.append("\n## 最「自信卻錯」的偵測(GT 證實的誤報,conf 高 → 低)\n")
-        L.append("這些是 YOLO 最該優先修的盲點(高信心的真誤報)。")
+        if data.get("reference_unverified"):  # honesty F1: don't call them "GT-confirmed" false alarms
+            L.append("\n## 最自信但與你標籤不符的偵測(conf 高 → 低)\n")
+            L.append(f"可能是模型誤報,也可能是你的標籤漏框/標錯。{_BG_HEDGE}")
+        else:
+            L.append("\n## 最「自信卻錯」的偵測(GT 證實的誤報,conf 高 → 低)\n")
+            L.append("這些是 YOLO 最該優先修的盲點(高信心的真誤報)。")
         L.append("| 影像 | 類別 | conf | 型態 |")
         L.append("|---|---|---|---|")
         for r in cw:
@@ -218,18 +254,35 @@ def render_weakness_report_html(data: dict) -> str:
                  f"<b style='color:{color}'>健康度:{_esc(s.get('health'))}</b> ｜ 最弱:{_esc(s.get('weakest') or '-')}"
                  f"<br><b>現在做這個:</b> {_esc(todo)}</div>")
     h.append(f"<p class='proxy'>{_esc(_PROXY.strip('_'))};可分性綁定目前 embedding 空間。</p>")
+    if data.get("reference_unverified"):  # honesty F1 banner (equal weight to the PROXY stamp)
+        h.append("<div id='unverified-ref' style='border-left:5px solid #a15c00;padding:8px 12px;"
+                 f"margin:8px 0;background:#fff8e6'>⚠ <b>{_esc(_UNVERIFIED_REF)}</b></div>")
     h.append(_provenance_html(data))
 
     pc = data.get("per_class") or []
     if pc:
+        has_delta = any("delta_ap" in r for r in pc)
         h.append("<h2 id='per-class'>哪一類最弱(per-class AP,弱→強)</h2>")
-        h.append("<table><tr><th>類別</th><th>AP</th><th>n_gt</th><th>漏報型態(分佈)</th><th>最常混淆成</th></tr>")
-        for r in pc:
-            fnt = r.get("fn_types") or {}
-            fn_s = " / ".join(f"{n} {t}" for t, n in sorted(fnt.items(), key=lambda kv: -kv[1])) or "-"
-            h.append(f"<tr><td>{_esc(r['cls'])}</td><td>{_esc(r['ap'])}</td><td>{_esc(r['n_gt'])}</td>"
-                     f"<td>{_esc(fn_s)}</td><td>{_esc(r.get('top_confusion') or '-')}</td></tr>")
-        h.append("</table>")
+        if has_delta:
+            h.append("<p class='legend'>Δ = 與上次「同一 eval set」執行相比的 AP 變化(你於外部重訓,非 VIX 造成);"
+                     "改了 eval set 的標籤會使其不可比 → 用凍結的 held-out eval set。</p>")
+            h.append("<table><tr><th>類別</th><th>AP</th><th>Δ(同 eval set)</th><th>n_gt</th>"
+                     "<th>漏報型態(分佈)</th><th>最常混淆成</th></tr>")
+            for r in pc:
+                fnt = r.get("fn_types") or {}
+                fn_s = " / ".join(f"{n} {t}" for t, n in sorted(fnt.items(), key=lambda kv: -kv[1])) or "-"
+                dcell = _delta_cell(r.get("delta_ap"), r.get("n_gt"))
+                h.append(f"<tr><td>{_esc(r['cls'])}</td><td>{_esc(r['ap'])}</td><td>{_esc(dcell)}</td>"
+                         f"<td>{_esc(r['n_gt'])}</td><td>{_esc(fn_s)}</td><td>{_esc(r.get('top_confusion') or '-')}</td></tr>")
+            h.append("</table>")
+        else:
+            h.append("<table><tr><th>類別</th><th>AP</th><th>n_gt</th><th>漏報型態(分佈)</th><th>最常混淆成</th></tr>")
+            for r in pc:
+                fnt = r.get("fn_types") or {}
+                fn_s = " / ".join(f"{n} {t}" for t, n in sorted(fnt.items(), key=lambda kv: -kv[1])) or "-"
+                h.append(f"<tr><td>{_esc(r['cls'])}</td><td>{_esc(r['ap'])}</td><td>{_esc(r['n_gt'])}</td>"
+                         f"<td>{_esc(fn_s)}</td><td>{_esc(r.get('top_confusion') or '-')}</td></tr>")
+            h.append("</table>")
 
     cons = data.get("consistency") or []
     h.append("<h2 id='consistency'>一致性歸因(GT × 嵌入:taxonomy / model / label?)</h2>")
@@ -257,8 +310,13 @@ def render_weakness_report_html(data: dict) -> str:
 
     cw = data.get("confident_wrong") or []
     if cw:
-        h.append("<h2 id='confident-wrong'>最「自信卻錯」(GT 證實的誤報)</h2><table>"
-                 "<tr><th>影像</th><th>類別</th><th>conf</th><th>型態</th></tr>")
+        if data.get("reference_unverified"):  # honesty F1
+            h.append("<h2 id='confident-wrong'>最自信但與你標籤不符</h2>"
+                     f"<p class='legend'>可能是模型誤報,也可能是你的標籤漏框/標錯。{_esc(_BG_HEDGE)}</p><table>"
+                     "<tr><th>影像</th><th>類別</th><th>conf</th><th>型態</th></tr>")
+        else:
+            h.append("<h2 id='confident-wrong'>最「自信卻錯」(GT 證實的誤報)</h2><table>"
+                     "<tr><th>影像</th><th>類別</th><th>conf</th><th>型態</th></tr>")
         for r in cw:
             h.append(f"<tr><td>{_esc(r['id'])}</td><td>{_esc(r.get('pred_class'))}</td>"
                      f"<td>{_esc(r['conf'])}</td><td>{_esc(r.get('fp_type','-'))}</td></tr>")

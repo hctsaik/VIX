@@ -32,3 +32,7 @@ _dogfood_yolo/
 _dogfood_yolo_train.log
 yolov8n.pt
 *.pt
+
+# beginner docs site: regenerable artifacts + verification scratch
+docs/guide/site/_artifacts/
+docs/guide/site/img/_verify_*.png

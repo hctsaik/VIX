@@ -1,0 +1,66 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>參考與完整手冊 · VIX 文件</title>
+<link rel="stylesheet" href="assets/site.css">
+</head><body><div class="layout">
+<nav class="toc">
+<a class="brand" href="index.html">VIX 文件</a>
+<p class="tagline">yolo val 給你 mAP;VIX 告訴你「該修什麼」</p>
+<h2>入門</h2>
+<a class="" href="index.html">首頁 / 5 分鐘上手</a>
+<a class="" href="install.html">安裝</a>
+<h2>核心流程</h2>
+<a class="" href="diagnose.html">診斷你的模型 <span class="r">A</span></a>
+<a class="" href="report.html">讀懂弱點報告 <span class="r">A</span></a>
+<a class="" href="formats.html">輸入格式 (YOLO/VOC/COCO) <span class="r">A</span></a>
+<a class="" href="loop.html">修了有沒有幫助? <span class="r">A</span></a>
+<h2>進階 (需 DINOv2 / App)</h2>
+<a class="" href="audit.html">稽核標籤本身 <span class="r">B</span></a>
+<a class="" href="app.html">在 App 裡覆核 <span class="r">B</span></a>
+<h2>觀念 / 參考</h2>
+<a class="" href="honesty.html">誠實邊界與限制</a>
+<a class="active" href="reference.html">參考與完整手冊</a>
+</nav>
+<main>
+<h1>參考與完整手冊</h1>
+<p class="sub">需要更深入時看這裡;CLI 一律以 vix --help 為準。</p>
+
+<div class="note">這份新手文件是「<b>入口</b>」;需要每個細節時,看下面的深入資料。CLI 一律以 <code>vix --help</code> 為準。</div>
+
+<h2 class="sec">完整操作手冊</h2>
+<p><a href="../VIX_SOP.html"><b>VIX_SOP.html</b></a> —— 一頁涵蓋原生 FiftyOne 與 VIX 自訂功能的完整 SOP:概念、設定、happy path、CLI 工作流、App 內 <code>@vix/review</code> operators、稽核帳本、疑難排解。</p>
+
+<h2 class="sec">CLI 指令</h2>
+<pre><code>vix --help          # ~16 個常用指令(其餘 ~60 個進階指令已隱藏,但仍可直接執行)
+vix &lt;verb&gt; --help    # 單一指令的選項
+vix quickstart      # 5 分鐘上手文字
+vix status          # 我現在在哪、下一步該下什麼</code></pre>
+<div class="ref">本站只內聯了 on-ramp 的少數指令(<code>diagnose / import-labels / eval-run / eval-ingest / app</code>)。完整指令清單會隨版本變動,請以 <code>vix --help</code> 為準,不要背這份文件。</div>
+
+<h2 class="sec">主題式走查(既有 HTML)</h2>
+<div class="cards">
+<a href="../GUI_WALKTHROUGH.html"><b>GUI 走查</b><span>App 內 10 步覆核工作流(真實資料)</span></a>
+<a href="../EMBEDDINGS_HOWTO.html"><b>Embeddings 圖解</b><span>0–7 步框選群集、檢視影像</span></a>
+<a href="../DINO_LABELAUDIT.html"><b>DINO 標籤稽核</b><span>嵌入離群點圖庫</span></a>
+<a href="../../SETUP_OTHER_MACHINE.md"><b>跨機器安裝</b><span>Tier-2 設定 + 疑難排解</span></a>
+</div>
+
+<h2 class="sec">疑難排解(常見第一次失敗)</h2>
+<table>
+<tr><th>症狀</th><th>原因 / 解法</th></tr>
+<tr><td>「找到 N 張影像但 0 個標籤配對成功」</td><td>資料夾結構不對。YOLO 要有 sibling <code>labels/</code>(或用 <code>--label-dir</code>);VOC 要有 <code>annotations/</code>;COCO 要 <code>--json</code>。</td></tr>
+<tr><td>「類別索引 N 不在 names 對照」</td><td>標籤是數字類別卻沒給類名。加 <code>--names a,b,c</code> 或 <code>--data-yaml</code>。</td></tr>
+<tr><td><code>eval-run 需要 ultralytics</code></td><td><code>pip install ultralytics</code>;或改走 <code>vix eval-ingest results.jsonl</code>(免 torch)。</td></tr>
+<tr><td><code>vix app</code> 開不起來 / 空白</td><td>用 Python 3.11(<code>.venv311</code>);確認 <code>import fiftyone</code> 成功。</td></tr>
+<tr><td>第一次 <code>--audit</code> 卡住 / 報網路錯</td><td>DINOv2 權重首次需下載一次;air-gapped 請先預放快取(見 SETUP 文件)。</td></tr>
+<tr><td><code>vix export</code> 說「尚無 golden」</td><td>diagnose 匯入的是未覆核參照(非 golden)。你本就擁有標籤檔;要透過 VIX 匯出需先 <code>vix resolve &lt;hash&gt; --confirm</code>。</td></tr>
+<tr><td>報告找不到</td><td>預設在目前目錄的 <code>vix_workspace/weakness_report.html</code>;或用 <code>--out</code> 指定。</td></tr>
+</table>
+
+<h2 class="sec">設計緣由(進階讀者)</h2>
+<p><a href="../../discussion/landable-system.md">docs/discussion/landable-system.md</a> —— 多代理討論如何讓 VIX「真的落地」:on-ramp、誠實防火牆、凍結 eval 的閉環。其餘設計與規格見 <code>docs/spec/</code>。</p>
+
+
+<footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·
+由 <code>docs/examples/gen_site.py</code> 產生。</footer>
+</main></div></body></html>

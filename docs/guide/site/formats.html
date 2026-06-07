@@ -1,0 +1,65 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>輸入格式 (YOLO / VOC / COCO) · VIX 文件</title>
+<link rel="stylesheet" href="assets/site.css">
+</head><body><div class="layout">
+<nav class="toc">
+<a class="brand" href="index.html">VIX 文件</a>
+<p class="tagline">yolo val 給你 mAP;VIX 告訴你「該修什麼」</p>
+<h2>入門</h2>
+<a class="" href="index.html">首頁 / 5 分鐘上手</a>
+<a class="" href="install.html">安裝</a>
+<h2>核心流程</h2>
+<a class="" href="diagnose.html">診斷你的模型 <span class="r">A</span></a>
+<a class="" href="report.html">讀懂弱點報告 <span class="r">A</span></a>
+<a class="active" href="formats.html">輸入格式 (YOLO/VOC/COCO) <span class="r">A</span></a>
+<a class="" href="loop.html">修了有沒有幫助? <span class="r">A</span></a>
+<h2>進階 (需 DINOv2 / App)</h2>
+<a class="" href="audit.html">稽核標籤本身 <span class="r">B</span></a>
+<a class="" href="app.html">在 App 裡覆核 <span class="r">B</span></a>
+<h2>觀念 / 參考</h2>
+<a class="" href="honesty.html">誠實邊界與限制</a>
+<a class="" href="reference.html">參考與完整手冊</a>
+</nav>
+<main>
+<h1>輸入格式 (YOLO / VOC / COCO)</h1>
+<p class="sub">資料夾擺對位置,VIX 才找得到你的標籤。</p>
+
+<div class="note">VIX 直接吃三種主流標註格式。重點是<b>資料夾擺對位置</b>,VIX 才找得到標籤。找不到時它會大聲報錯,不會假裝健康。</div>
+
+<h2 class="sec">YOLO(sibling labels/)</h2>
+<pre><code>dataset/
+  images/  a.jpg  b.jpg ...
+  labels/  a.txt  b.txt ...     # 每行: cls cx cy w h(都已正規化 0~1)
+  data.yaml                      # names: [car, person, ...]
+vix diagnose ./dataset --labels yolo --weights best.pt --data-yaml data.yaml</code></pre>
+<p>類別是數字索引時(下載的資料集常見 <code>0 1 2</code>),用 <code>--data-yaml</code>(讀 <code>names:</code>)或 <code>--names</code> 給它可讀名稱:</p>
+<pre><code># 標籤是 "0 0.5 0.5 0.2 0.2" 這種數字類別,且沒有 data.yaml:
+vix diagnose ./dataset --labels yolo --weights best.pt --names car,person,bike
+# 標籤檔不在 sibling labels/(例如放在 ann/)時:
+vix diagnose ./dataset --labels yolo --weights best.pt --names car,person --label-dir ann</code></pre>
+<div class="ref">沒給 <code>--names</code> 也沒 <code>--data-yaml</code> 而標籤是數字時,VIX 會大聲報錯「類別索引 N 不在 names 對照」,不會默默用數字當類名。</div>
+
+<h2 class="sec">Pascal VOC(annotations/*.xml)</h2>
+<pre><code>dataset/
+  images/ ...               annotations/ a.xml b.xml ...   # 絕對座標 xmin/ymin/xmax/ymax
+vix diagnose ./dataset --labels voc --weights best.pt</code></pre>
+
+<h2 class="sec">COCO(單一 instances.json)</h2>
+<pre><code>vix diagnose ./images --labels coco --json instances.json --weights best.pt</code></pre>
+
+<h2 class="sec">我沒有要在 VIX 裡跑模型(只有 predictions + GT)</h2>
+<p>若你已經自己跑過推論,手上有一份 JSONL,每行一張圖,就直接餵給 VIX(<b>純離線、免 torch</b>):</p>
+<pre><code>{"vix_hash": "img001", "gt": [{"label": "car", "bbox": [0.5,0.5,0.2,0.2]}],
+ "pred": [{"label": "car", "bbox": [0.51,0.5,0.2,0.2], "conf": 0.93}]}
+# bbox 為正規化 (cx, cy, w, h)
+vix eval-ingest results.jsonl
+vix weakness-report</code></pre>
+
+<div class="warn"><b>常見錯誤:</b>標籤檔用 Windows 編輯器存成帶 BOM 的檔 —— VIX 已能容忍。但若 <code>--labels yolo</code> 卻沒有 <code>labels/</code> 目錄,會看到「找到 N 張影像但 0 個標籤配對成功」並附上它找過哪些路徑,照提示修即可。</div>
+<div class="ref">座標慣例:VIX 內部一律用正規化 <code>(cx, cy, w, h)</code>。VOC 的絕對 <code>xyxy</code> 與 COCO 的絕對 <code>xywh</code> 會自動換算;帶標註卻沒有有效影像尺寸的檔案會<b>大聲報錯</b>(而不是默默丟掉框)。</div>
+
+<div class="cta"><h3>下一步</h3><p>產出報告後,逐區塊讀懂它。</p><a href="report.html">→ 讀懂弱點報告</a></div>
+<footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·
+由 <code>docs/examples/gen_site.py</code> 產生。</footer>
+</main></div></body></html>

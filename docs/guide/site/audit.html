@@ -1,0 +1,56 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>稽核標籤本身 · VIX 文件</title>
+<link rel="stylesheet" href="assets/site.css">
+</head><body><div class="layout">
+<nav class="toc">
+<a class="brand" href="index.html">VIX 文件</a>
+<p class="tagline">yolo val 給你 mAP;VIX 告訴你「該修什麼」</p>
+<h2>入門</h2>
+<a class="" href="index.html">首頁 / 5 分鐘上手</a>
+<a class="" href="install.html">安裝</a>
+<h2>核心流程</h2>
+<a class="" href="diagnose.html">診斷你的模型 <span class="r">A</span></a>
+<a class="" href="report.html">讀懂弱點報告 <span class="r">A</span></a>
+<a class="" href="formats.html">輸入格式 (YOLO/VOC/COCO) <span class="r">A</span></a>
+<a class="" href="loop.html">修了有沒有幫助? <span class="r">A</span></a>
+<h2>進階 (需 DINOv2 / App)</h2>
+<a class="active" href="audit.html">稽核標籤本身 <span class="r">B</span></a>
+<a class="" href="app.html">在 App 裡覆核 <span class="r">B</span></a>
+<h2>觀念 / 參考</h2>
+<a class="" href="honesty.html">誠實邊界與限制</a>
+<a class="" href="reference.html">參考與完整手冊</a>
+</nav>
+<main>
+<h1>稽核標籤本身</h1>
+<p class="sub">用 DINOv2 嵌入找疑似標錯,不需要模型。</p>
+
+<div class="note"><span class="tag b">Tier B</span> 前面幾頁靠「模型 vs 你的標籤」找問題。這頁反過來:用 <b>DINOv2 嵌入</b>直接檢查<b>標籤本身</b>對不對 —— 不需要模型。需要 Tier-2 安裝(見 <a href="install.html">安裝</a>)。</div>
+
+<h2 class="sec">嵌入式標籤稽核</h2>
+<pre><code>vix diagnose ./dataset --labels voc --audit          # 最簡單:一個指令把標籤匯入+嵌入+稽核做完
+# 或分步(需先匯入並計算嵌入):
+vix import-labels ./dataset --labels voc
+vix embed
+vix audit-labels --top 20                            # 列出最可疑的標籤</code></pre>
+<div class="ref">先決條件:<code>audit-labels</code>/<code>near-dup-labels</code> 需要工作區裡已有「匯入的標籤 + DINOv2 嵌入」。直接用 <code>vix diagnose --audit</code> 會一次幫你做完,新手建議走這條。</div>
+<p>原理:把每個框的影像嵌入到 DINOv2 空間,看它的<b>最近鄰多半是別類</b> → 疑似標錯(<code>given → suggested(disagree=…)</code>)。下圖是一個植入錯誤的示範資料集,離群點一眼可見:</p>
+<div class="gallery">
+<figure><img src="../dino_labelaudit/00.png" alt="DINO 標籤稽核 1"></figure>
+<figure><img src="../dino_labelaudit/03.png" alt="DINO 標籤稽核 2"></figure>
+<figure><img src="../dino_labelaudit/07.png" alt="DINO 標籤稽核 3"></figure>
+</div>
+<div class="ref">完整離群圖庫見 <a href="../DINO_LABELAUDIT.html">DINO_LABELAUDIT.html</a>。</div>
+
+<h2 class="sec">因果確定的標錯:near-dup-labels</h2>
+<pre><code>vix near-dup-labels</code></pre>
+<p>找出<b>幾乎一模一樣的影像卻帶矛盾標籤</b>的群組。這是「至少有一個一定錯」的鐵證(不是 proxy),最適合優先處理。</p>
+
+<h2 class="sec">誠實防火牆(重要)</h2>
+<div class="warn">當參照是你<b>未覆核的匯入標籤</b>時,VIX <b>不會</b>直接判「label_noise(你的標籤是雜訊)」—— 那等於用受審的標籤定罪自己(循環論證)。它只會給 <b>label_audit_needed</b>:「先人工覆核這些標籤」。可分性這種「在嵌入空間分不分得開」的幾何陳述照常顯示(它不主張誰對誰錯)。</div>
+<div class="warn"><b>離線品質提醒:</b><code>--adapter memory</code> 的像素 fallback 嵌入<b>不適合</b>稽核;標籤稽核請用真正的 DINOv2(Tier-2)。第一次使用 DINOv2 會下載一次權重。</div>
+
+<div class="cta"><h3>下一步</h3><p>把這些訊號丟進 FiftyOne App,用點選的方式覆核。</p><a href="app.html">→ 在 App 裡覆核</a></div>
+<footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·
+由 <code>docs/examples/gen_site.py</code> 產生。</footer>
+</main></div></body></html>

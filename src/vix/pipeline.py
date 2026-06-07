@@ -106,6 +106,58 @@ def ingest(
     return n_new, n_skipped
 
 
+def import_labels(adapter, cfg, folder, fmt="yolo", names=None, batch="import",
+                  as_="reference", json_path=None, label_dir=None):
+    """Import an EXISTING labelled dataset's ground truth (the on-ramp seam).
+
+    Ingests ``folder`` (idempotent, content-hash keyed) then parses yolo/voc/coco labels and
+    attaches them as detections, JOINED TO IMAGES BY CONTENT HASH (compute_hash) — never by
+    filename stem. A label set referencing an image that wasn't ingested fails loudly.
+
+    HONESTY: imported labels are human-UNVERIFIED. ``as_='reference'`` tags them
+    ``Tag.PROVISIONAL`` (a diagnosis-only reference that NEVER feeds calibrate/route/gate/
+    snapshot/export — those read GOLDEN); ``as_='eval'`` tags ``Tag.EVAL``. Promotion to
+    golden is only via the human-confirm path."""
+    from .core.label_import import parse_labels
+    from .core.manifest import compute_hash
+
+    ingest(adapter, cfg, folder, batch)  # images in by content hash
+    manifest = Manifest.load(cfg.manifest_path)
+    parsed = parse_labels(folder, fmt, names=names, label_dir=label_dir, json_path=json_path)
+    tag = Tag.EVAL if as_ == "eval" else Tag.PROVISIONAL
+
+    missing: list[str] = []
+    n_imgs = n_boxes = 0
+    classes: set[str] = set()
+    for img_path, dets in parsed.items():
+        p = Path(img_path)
+        if not p.exists():
+            missing.append(img_path)
+            continue
+        h = compute_hash(p)
+        if not manifest.has(h):
+            missing.append(img_path)  # label references an image not under the ingested folder
+            continue
+        adapter.set_detections(h, dets)
+        if dets:
+            adapter.apply_tags(h, [tag])
+            n_imgs += 1
+            n_boxes += len(dets)
+            classes.update(d.label for d in dets)
+    if missing:
+        raise ValueError(
+            f"{len(missing)} 個標籤檔指向未匯入/不存在的影像(例:{missing[0]});"
+            "請確認標籤與影像在同一資料夾、或用 --json/--label-dir 指定正確路徑。"
+        )
+    DecisionLog(cfg.decision_log_path).append(
+        "import_labels", decision=f"{as_}:{fmt}",
+        extra={"n_images": n_imgs, "n_boxes": n_boxes, "n_classes": len(classes), "tag": tag})
+    log.info("import_labels: %d images, %d boxes, %d classes (fmt=%s, tag=%s)",
+             n_imgs, n_boxes, len(classes), fmt, tag)
+    return {"n_images": n_imgs, "n_boxes": n_boxes, "classes": sorted(classes),
+            "n_scanned": len(parsed)}  # images seen (for a precise 0-box diagnostic)
+
+
 def infer_synthetic(adapter, cfg):  # offline demo/CI: seed deterministic synthetic detections + embeddings
     """No-YOLO fallback so `--adapter memory` dry-runs / CI produce a non-empty pipeline.
     Label = source parent-folder name (common demo layout); one full-image box per sample.
@@ -296,6 +348,12 @@ def export(
         if Tag.GOLDEN in tags and Tag.REJECTED not in tags
     ]
     if not records:  # U2: nothing to export -> name the prerequisite instead of writing an empty dir
+        has_provisional = any(Tag.PROVISIONAL in tags for _h, _s, _d, tags in adapter.samples())
+        if has_provisional:  # diagnose flow: imported labels are PROVISIONAL refs, not golden (honesty firewall)
+            raise ValueError(
+                "尚無 golden 可匯出。這個資料集是 diagnose 匯入的「參照標籤(未覆核,非 golden)」——"
+                "你本就擁有這些標籤檔,在你的標註工具修正後直接重訓即可;"
+                "若要透過 VIX 匯出,請先 vix resolve <hash> --confirm 將覆核過的樣本併入 golden。")
         raise ValueError("尚無 golden 可匯出:請先覆核並併入 golden(vix review-queue → confirm)")
     res = DatasetExporter(class_names).export(records, dst, copy_images=copy_images)
     manifest = verify_mod.write_dir_manifest(dst)  # hashes images + labels + data.yaml (U8/V8)
@@ -1020,23 +1078,44 @@ def verify_dataset(cfg, manifest_path, data_dir):  # U8
 
 # --- keystone: close the data <-> model loop (eval ingestion + error mining) ---
 
-def eval_ingest(adapter, cfg, results_path, iou_thr=0.5):
+def eval_ingest(adapter, cfg, results, iou_thr=0.5, strict_join=False):
     """Ingest a held-out val evaluation (GT + predictions) -> per-class AP, confusion,
     and per-image FP/FN; attach eval_fp/eval_fn fields and store eval_results.json.
-    Turns VIX from model-blind (confidence+embedding proxies) into model-validated."""
+    Turns VIX from model-blind (confidence+embedding proxies) into model-validated.
+
+    ``results`` is a path (JSONL / JSON array, BOM-tolerant) OR an already-parsed list of
+    {vix_hash, gt, pred} dicts (so eval-run / diagnose feed it without a temp file).
+
+    ``strict_join`` (diagnose/eval-run path): every referenced vix_hash MUST exist in the
+    adapter; otherwise raise. This catches the silent ingest<->eval key mismatch (predictions
+    keyed by filename stem against a content-hash manifest) that would print a green mAP while
+    attaching per-image FP/FN to nothing. The legacy bare `eval-ingest` verb keeps strict_join
+    False (best-effort: an external eval may reference hashes not in this adapter view)."""
     from .core.eval_ingest import eval_set_hash, evaluate
 
-    raw = Path(results_path).read_text(encoding="utf-8-sig").strip()
-    images = json.loads(raw) if raw.startswith("[") else [
-        json.loads(line) for line in raw.splitlines() if line.strip()
-    ]
+    if isinstance(results, (str, Path)):
+        raw = Path(results).read_text(encoding="utf-8-sig").strip()
+        images = json.loads(raw) if raw.startswith("[") else [
+            json.loads(line) for line in raw.splitlines() if line.strip()
+        ]
+    else:
+        images = list(results)
     res = evaluate(images, iou_thr=iou_thr)
     res["eval_set_hash"] = eval_set_hash(images)  # binds this result to the exact eval SET (R6)
+    if strict_join:  # KS3 guard: a stem-keyed JSONL against a content-hash manifest fails loudly here
+        known = {h for h, _s, _d, _t in adapter.samples()}
+        missing = [h for h in res["per_image"] if h not in known]
+        if missing:
+            raise ValueError(
+                f"eval 結果引用了 {len(missing)} 個不在資料集裡的影像雜湊(例:{missing[0]});"
+                "predictions 的 vix_hash 必須是內容雜湊(compute_hash),不是檔名 stem。"
+            )
     for h, pi in res["per_image"].items():  # so review-queue / the App can sort by model failure
         try:
             adapter.attach_fields(h, {"eval_fp": pi["n_fp"], "eval_fn": pi["n_fn"]})
         except Exception:  # noqa: BLE001 - eval may reference hashes not in this adapter view
-            pass
+            if strict_join:
+                raise
     cfg.eval_results_path.write_text(  # per_image stripped; fp_detail/fn_detail/eval_set_hash kept
         json.dumps({k: v for k, v in res.items() if k != "per_image"}, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1050,6 +1129,86 @@ def eval_ingest(adapter, cfg, results_path, iou_thr=0.5):
     log.info("eval_ingest: mAP=%.3f, %d classes, %d FN / %d FP images",
              res["mAP"], len(res["per_class_ap"]), len(res["fn_hashes"]), len(res["fp_hashes"]))
     return res
+
+
+def eval_run(adapter, cfg, weights, imgsz=640, conf=0.05, iou_thr=0.5,
+             gt_tags=(Tag.PROVISIONAL, Tag.EVAL)):
+    """Run the engineer's OWN model on the imported-GT images and feed predictions + GT into
+    eval_ingest — the shipped `yolo val -> VIX` bridge (was trapped in dogfood_eval_yolo.py).
+
+    GT comes from images tagged PROVISIONAL/EVAL (via import_labels). Predictions are keyed by
+    the sample's CONTENT-HASH vix_hash (not filename stem), and eval_ingest runs with
+    strict_join=True so a key mismatch fails loudly instead of attaching FP/FN to nothing."""
+    try:
+        from ultralytics import YOLO
+    except Exception as exc:  # noqa: BLE001 - keep the verb importable without torch/ultralytics
+        raise ValueError("eval-run 需要 ultralytics(pip install ultralytics);"
+                         "或自行產生 predictions+GT 的 JSONL 後用 vix eval-ingest。") from exc
+    model = YOLO(str(weights))
+    want = set(gt_tags)
+    images, n_pred = [], 0
+    for h, src, dets, tags in adapter.samples():
+        if not (want & set(tags)) or not dets:
+            continue
+        r = model.predict(src, imgsz=imgsz, conf=conf, verbose=False)[0]
+        names = getattr(r, "names", {}) or {}
+        preds = []
+        for i in range(len(r.boxes)):
+            cid = int(r.boxes.cls[i])
+            preds.append({"label": names.get(cid, str(cid)),
+                          "bbox": [round(float(v), 6) for v in r.boxes.xywhn[i].tolist()],
+                          "conf": round(float(r.boxes.conf[i]), 4)})
+        n_pred += len(preds)
+        images.append({"vix_hash": h,  # content-hash key -> joins to the ingested image
+                       "gt": [{"label": d.label, "bbox": [round(c, 6) for c in d.bbox.as_tuple()]}
+                              for d in dets],
+                       "pred": preds})
+    if not images:
+        raise ValueError("eval-run 找不到帶 GT 的影像;請先 vix import-labels / vix diagnose --labels 匯入標籤。")
+    res = eval_ingest(adapter, cfg, images, iou_thr=iou_thr, strict_join=True)
+    res["n_pred"] = n_pred
+    log.info("eval_run: %d images, %d preds, mAP=%.3f", len(images), n_pred, res["mAP"])
+    return res
+
+
+def diagnose(adapter, cfg, folder, labels_fmt, weights=None, audit=False, names=None,
+             json_path=None, label_dir=None, out_path=None, batch="diagnose", iou_thr=0.5):
+    """THE on-ramp: import the engineer's EXISTING labels + (optionally) run their model, and
+    produce the weakness/attribution report — no golden/anchor/calibrate/route/gate worldview.
+
+    Tier A (`weights`): typed per-class FP/FN + AP + confusion vs the imported labels — needs
+    no DINOv2/FiftyOne. Tier B (`audit`): embedding label-audit + failure attribution (needs
+    real embeddings). HONESTY: the imported labels are an UNVERIFIED reference (Tag.PROVISIONAL,
+    never golden); the report is framed accordingly and the attribution firewall (no label_noise,
+    no gate-block on an unverified reference) applies."""
+    if not weights and not audit:
+        raise ValueError("diagnose 需要 --weights(Tier A:模型弱點)或 --audit(Tier B:標籤稽核)其一")
+    imp = import_labels(adapter, cfg, folder, labels_fmt, names=names, batch=batch,
+                        as_="reference", json_path=json_path, label_dir=label_dir)
+    if imp["n_boxes"] == 0:  # honesty guard: a wrong folder layout must not look like "all clean"
+        hint = {"yolo": "找過 images/../labels/、sibling .txt、<root>/labels/;用 --label-dir 指定",
+                "voc": "找過 annotations/、Annotations/;確認 xml 與影像 stem 對應",
+                "coco": "用 --json 指定 instances.json,且其 file_name 對得上影像"}.get(labels_fmt, "")
+        raise ValueError(
+            f"找到 {imp['n_scanned']} 張影像但 0 個標籤配對成功({labels_fmt})。{hint}")
+    out = {"import": imp, "tiers": []}
+    if audit:  # Tier B: embed the imported-GT crops (real DINOv2 if the adapter has one)
+        adapter.compute_embeddings(cfg.dinov2_model_key)
+        out["tiers"].append("B")
+    if weights:  # Tier A: run the user's model -> eval
+        ev = eval_run(adapter, cfg, weights, iou_thr=iou_thr)
+        out["eval"] = {"mAP": ev["mAP"], "loc_gap": ev.get("loc_gap"),
+                       # weakest class first (matches the report table; raw evaluate() is alphabetical)
+                       "per_class_ap": dict(sorted(ev["per_class_ap"].items(), key=lambda kv: kv[1]))}
+        out["tiers"].append("A")
+    wr = weakness_report(
+        adapter, cfg, out_path=out_path, reference_unverified=True,
+        consistency_tag=(Tag.PROVISIONAL if audit else Tag.GOLDEN),
+        reference_trusted=False)  # imported labels are NOT human-confirmed -> firewall on
+    out["summary"] = wr["data"].get("summary")
+    out["report_md"] = wr.get("path")
+    out["comparable"] = (wr["data"].get("provenance") or {}).get("comparable")  # for a state-aware next-step nudge
+    return out
 
 
 def _adapt_rescued(cfg):
@@ -1139,13 +1298,17 @@ def _report_provenance(cfg, cur_eval_hash):
     the report self-locates on its own trend and flags 'not comparable to last cycle' honestly
     (a +mAP on a silently-changed val set is the failure this prevents). Pure read, reuses the log."""
     recs = DecisionLog(cfg.decision_log_path).read_all()
-    evs = [(r.get("extra", {}).get("eval_set_hash"), r.get("extra", {}).get("mAP"))
+    evs = [(r.get("extra", {}).get("eval_set_hash"), r.get("extra", {}).get("mAP"),
+            r.get("extra", {}).get("per_class_ap"))
            for r in recs if r.get("event") == "eval_ingest"]
     prev_report_ts = next((r.get("ts_utc") for r in reversed(recs) if r.get("event") == "weakness_report"), None)
-    prev_hash, prev_map = (evs[-2] if len(evs) >= 2 else (None, None))  # current eval = last logged eval_ingest
+    prev_hash, prev_map, prev_pc = (evs[-2] if len(evs) >= 2 else (None, None, None))  # current = last eval_ingest
     comparable = None if (not cur_eval_hash or prev_hash is None) else (prev_hash == cur_eval_hash)
-    return {"eval_set_hash": cur_eval_hash, "prev_report_ts": prev_report_ts,
-            "comparable": comparable, "prev_mAP": (prev_map if comparable else None)}
+    return {"eval_set_hash": cur_eval_hash, "prev_report_ts": prev_report_ts, "prev_eval_set_hash": prev_hash,
+            "comparable": comparable, "prev_mAP": (prev_map if comparable else None),
+            # per-class AP of the previous COMPARABLE run -> "which class moved" (only when eval set is unchanged;
+            # eval_set_hash includes GT, so a relabelled eval set is correctly NOT comparable)
+            "prev_per_class_ap": (prev_pc if comparable else None)}
 
 
 def report_trend(cfg, classes=None):
@@ -1368,7 +1531,8 @@ def hardneg(adapter, cfg, top=50, mode="auto", batch=None):
     return {"mode": "gt_free", "rows": rows}
 
 
-def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=None, worklist=False, batch=None):
+def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=None, worklist=False, batch=None,
+                    reference_unverified=False, consistency_tag=Tag.GOLDEN, reference_trusted=True):
     """Roll VIX's model-validated signals + hardneg + a per-weak-class label queue into ONE
     human-readable 'where YOLO is weak / go label these' Markdown report (model-loop-v2). Two-mode:
     GT block (per-class AP/confusion/loc_gap/FP-FN typing + confidently-wrong eval-FPs) when a val
@@ -1425,10 +1589,11 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
         pass
 
     from .core.consistency import consistency_findings  # GT x embedding attribution (taxonomy/model/label)
+    data["reference_unverified"] = reference_unverified  # honesty F1: imported labels are not human-confirmed
     data["consistency"] = consistency_findings(
-        _emb_by_class(adapter, {Tag.GOLDEN}),
+        _emb_by_class(adapter, {consistency_tag}),
         (ev.get("confusion") if ev else None), (ev.get("n_gt") if ev else None),
-        adapt_rescued=_adapt_rescued(cfg))
+        adapt_rescued=_adapt_rescued(cfg), reference_trusted=reference_trusted)
 
     # queue hit-rate: log THIS report's label queue, then surface every queue's measured precision/trend
     _log_queue(cfg, "weakness_queue", [c["id"] for cands in data["queue"].values() for c in cands], "label")
@@ -1439,6 +1604,12 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
         for c in cands:
             c["resolved"] = c["id"] in resolved
     data["provenance"] = _report_provenance(cfg, (ev or {}).get("eval_set_hash"))  # L1/L3
+    prev_pc = data["provenance"].get("prev_per_class_ap")  # in-report before/after (Round 5): "which class moved"
+    if prev_pc:  # only set when the eval set is unchanged (comparable) -> honest same-eval-set delta
+        for r in data["per_class"]:
+            if r["cls"] in prev_pc and prev_pc[r["cls"]] is not None:
+                r["prev_ap"] = prev_pc[r["cls"]]
+                r["delta_ap"] = round(r["ap"] - prev_pc[r["cls"]], 4)
 
     # TL;DR health verdict + "do this now" (Tier 1: scannability)
     worst = data["per_class"][0] if data["per_class"] else None
@@ -1446,11 +1617,13 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
                    if f["verdict"] in ("taxonomy", "label_noise") and not f.get("representation_fixable")
                    and f["tier"] == "supported"]
     rep_fix = [f for f in data["consistency"] if f.get("representation_fixable")]
+    audit_needed = [f for f in data["consistency"] if f["verdict"] == "label_audit_needed"]  # firewall (F2)
     n_open = sum(1 for v in data["queue"].values() for c in v if not c.get("resolved"))  # L4: open != emitted
     n_cw = len(data["confident_wrong"])
     if (worst and worst["ap"] < 0.5) or bad_consist:
         health = "RED"
-    elif (worst and worst["ap"] < 0.8) or n_cw or any(f["verdict"] == "taxonomy_watch" for f in data["consistency"]):
+    elif (worst and worst["ap"] < 0.8) or n_cw or audit_needed or any(
+            f["verdict"] in ("taxonomy_watch", "model_watch") for f in data["consistency"]):
         health = "AMBER"
     else:
         health = "GREEN"
@@ -1460,6 +1633,9 @@ def weakness_report(adapter, cfg, top_classes=5, queue_per_class=10, out_path=No
     if rep_fix:  # A2: a representation problem -> adapt-embedding is the lever; labeling is the WRONG first move
         todo.append("套用 adapt-embedding:已 CV 驗證可分開 "
                     + ", ".join("↔".join(f["pair"]) for f in rep_fix) + "(表徵問題,標註不是這裡的槓桿)")
+    if audit_needed:  # F2: unverified reference -> human-confirm before any label-noise claim
+        todo.append("人工覆核這些匯入標籤(嵌入難分,確認後才能升級 golden):"
+                    + ", ".join("↔".join(f["pair"]) for f in audit_needed))
     if n_open:
         todo.append(f"標 {n_open} 個候選(見佇列)")
     if n_cw:

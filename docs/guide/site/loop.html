@@ -1,0 +1,49 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>修了有沒有幫助? · VIX 文件</title>
+<link rel="stylesheet" href="assets/site.css">
+</head><body><div class="layout">
+<nav class="toc">
+<a class="brand" href="index.html">VIX 文件</a>
+<p class="tagline">yolo val 給你 mAP;VIX 告訴你「該修什麼」</p>
+<h2>入門</h2>
+<a class="" href="index.html">首頁 / 5 分鐘上手</a>
+<a class="" href="install.html">安裝</a>
+<h2>核心流程</h2>
+<a class="" href="diagnose.html">診斷你的模型 <span class="r">A</span></a>
+<a class="" href="report.html">讀懂弱點報告 <span class="r">A</span></a>
+<a class="" href="formats.html">輸入格式 (YOLO/VOC/COCO) <span class="r">A</span></a>
+<a class="active" href="loop.html">修了有沒有幫助? <span class="r">A</span></a>
+<h2>進階 (需 DINOv2 / App)</h2>
+<a class="" href="audit.html">稽核標籤本身 <span class="r">B</span></a>
+<a class="" href="app.html">在 App 裡覆核 <span class="r">B</span></a>
+<h2>觀念 / 參考</h2>
+<a class="" href="honesty.html">誠實邊界與限制</a>
+<a class="" href="reference.html">參考與完整手冊</a>
+</nav>
+<main>
+<h1>修了有沒有幫助?</h1>
+<p class="sub">誠實的閉環:固定考卷,才能比較分數。</p>
+
+<div class="note">這頁回答工程師最在意的問題:<b>「我花一週修標籤、重訓了,到底有沒有變好?」</b> VIX 能誠實地告訴你 —— 前提是你用對量法。</div>
+
+<h2 class="sec">誠實的閉環</h2>
+<ol class="steps">
+<li><code>vix diagnose</code> → 看報告,知道哪類弱、哪些框可能錯。</li>
+<li>在<b>你的標註工具</b>修「<b>訓練集</b>」標籤 → <b>外部重訓</b>你的模型(VIX 從不替你訓練)。</li>
+<li>在<b>同一個「凍結」的 held-out eval set</b> 上再跑一次 <code>vix diagnose</code>。</li>
+<li>報告的 per-class 表會出現 <b>Δ(同 eval set)</b> 欄,告訴你每類 AP 動了多少。(或用 <code>vix ap-trend</code> 看跨輪趨勢。)</li>
+</ol>
+
+<h2 class="sec">關鍵誠實規則:eval set 必須「凍結」</h2>
+<div class="warn"><b>為什麼不能改 eval set 的標籤?</b> VIX 用 <code>eval_set_hash</code> 綁定一次評估的「那一組 GT」。<b>這個雜湊包含 GT 標籤與框</b> —— 你只要動了 eval set 的標籤,雜湊就變,VIX 會<b>拒絕</b>顯示 Δ 並標示「本期 eval set 與上期不同 → 不可比較」。<br><br>
+所以正確做法是:<b>修「訓練集」的標籤,不要動「eval set」</b>;用一份不變的 held-out eval set 來量改善。否則你看到的 mAP 變化分不清是「模型變好」還是「考卷變簡單」。</div>
+
+<h2 class="sec">VIX 不會替你宣稱因果</h2>
+<p>Δ 欄只說「在這個固定 eval set 上,這類 AP 從 0.41 → 0.58」,並註明「<b>你於外部重訓;非 VIX 造成</b>」。它不會說「VIX 讓你的模型變好」或「標這些一定讓 mAP +X」。低支撐類別只標「n少不穩」不畫箭頭。這些都是刻意的:<b>給你決策所需的事實,但不誇大。</b></p>
+<div class="check"><b>你現在能回答:</b>「這類 AP 在固定考卷上真的進步了嗎?」→ 看 Δ 欄。值不值得繼續修某類 → 你自己決定,VIX 只給誠實數字。</div>
+
+<div class="cta"><h3>下一步</h3><p>想直接檢查標籤對不對?用 DINOv2 嵌入稽核。</p><a href="audit.html">→ 稽核標籤本身</a></div>
+<footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·
+由 <code>docs/examples/gen_site.py</code> 產生。</footer>
+</main></div></body></html>

@@ -1,0 +1,45 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>誠實邊界與限制 · VIX 文件</title>
+<link rel="stylesheet" href="assets/site.css">
+</head><body><div class="layout">
+<nav class="toc">
+<a class="brand" href="index.html">VIX 文件</a>
+<p class="tagline">yolo val 給你 mAP;VIX 告訴你「該修什麼」</p>
+<h2>入門</h2>
+<a class="" href="index.html">首頁 / 5 分鐘上手</a>
+<a class="" href="install.html">安裝</a>
+<h2>核心流程</h2>
+<a class="" href="diagnose.html">診斷你的模型 <span class="r">A</span></a>
+<a class="" href="report.html">讀懂弱點報告 <span class="r">A</span></a>
+<a class="" href="formats.html">輸入格式 (YOLO/VOC/COCO) <span class="r">A</span></a>
+<a class="" href="loop.html">修了有沒有幫助? <span class="r">A</span></a>
+<h2>進階 (需 DINOv2 / App)</h2>
+<a class="" href="audit.html">稽核標籤本身 <span class="r">B</span></a>
+<a class="" href="app.html">在 App 裡覆核 <span class="r">B</span></a>
+<h2>觀念 / 參考</h2>
+<a class="active" href="honesty.html">誠實邊界與限制</a>
+<a class="" href="reference.html">參考與完整手冊</a>
+</nav>
+<main>
+<h1>誠實邊界與限制</h1>
+<p class="sub">VIX 的身分:寧可說「我不知道」也不假裝。</p>
+
+<div class="note">VIX 的身分就是「<b>誠實邊界</b>」:它寧可說「我不知道」也不假裝。這頁把全站的誠實規則集中一處 —— 都和程式碼裡的行為一致。</div>
+
+<table>
+<tr><th>原則</th><th>意思</th><th>為什麼</th></tr>
+<tr><td><b>H1 匯入標籤 = 未覆核參照</b></td><td>你的標籤標記為 provisional,<b>永不</b>當 golden,不會進 calibrate/route/gate/export。</td><td>VIX 不把你尚未確認的標籤當真理。</td></tr>
+<tr><td><b>H2 「誤報」可能是你漏標</b></td><td><code>type=background</code> 的誤報附雙因 hedge:可能模型幻覺,也可能你的 GT 漏框。</td><td>對未覆核的標籤,方向性的對錯不能單方面斷定。</td></tr>
+<tr><td><b>H3 可比性需凍結 eval set</b></td><td><code>eval_set_hash</code> 含 GT;改了 eval 標籤就「不可比較」,Δ 不顯示。</td><td>否則分不清是模型變好還是考卷變簡單。</td></tr>
+<tr><td><b>H4 排序是 PROXY</b></td><td>「該標這些」是優先順序,<b>非</b>實測 mAP 增益(VIX 不重訓)。</td><td>不誇大「標了一定變好」。</td></tr>
+<tr><td><b>H5 不用受審標籤定罪自己</b></td><td>未覆核參照下,<code>label_noise</code> 被抑制成 <code>label_audit_needed</code>;歸因不會阻擋你的重訓。</td><td>避免循環論證。</td></tr>
+<tr><td><b>H6 低支撐不畫箭頭</b></td><td>n_gt &lt; 20 的 Δ 標「n少不穩」,不給 ↑/↓。</td><td>小樣本的大幅變化多半是雜訊。</td></tr>
+<tr><td><b>H7 像素 fallback 不適合稽核</b></td><td><code>--adapter memory</code> 的像素嵌入只適合測試/離線示範;稽核請用真 DINOv2。</td><td>嵌入品質不足會給出誤導結論。</td></tr>
+</table>
+<div class="tip">看到這些 hedge 不是 VIX 沒用,而是它<b>值得信任</b>的原因:每個它敢說的結論,都是它真的能證明的。</div>
+
+<div class="cta"><h3>下一步</h3><p>需要每個細節?看完整 SOP 與 CLI。</p><a href="reference.html">→ 參考與完整手冊</a></div>
+<footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·
+由 <code>docs/examples/gen_site.py</code> 產生。</footer>
+</main></div></body></html>

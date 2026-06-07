@@ -1,0 +1,53 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>讀懂弱點報告 · VIX 文件</title>
+<link rel="stylesheet" href="assets/site.css">
+</head><body><div class="layout">
+<nav class="toc">
+<a class="brand" href="index.html">VIX 文件</a>
+<p class="tagline">yolo val 給你 mAP;VIX 告訴你「該修什麼」</p>
+<h2>入門</h2>
+<a class="" href="index.html">首頁 / 5 分鐘上手</a>
+<a class="" href="install.html">安裝</a>
+<h2>核心流程</h2>
+<a class="" href="diagnose.html">診斷你的模型 <span class="r">A</span></a>
+<a class="active" href="report.html">讀懂弱點報告 <span class="r">A</span></a>
+<a class="" href="formats.html">輸入格式 (YOLO/VOC/COCO) <span class="r">A</span></a>
+<a class="" href="loop.html">修了有沒有幫助? <span class="r">A</span></a>
+<h2>進階 (需 DINOv2 / App)</h2>
+<a class="" href="audit.html">稽核標籤本身 <span class="r">B</span></a>
+<a class="" href="app.html">在 App 裡覆核 <span class="r">B</span></a>
+<h2>觀念 / 參考</h2>
+<a class="" href="honesty.html">誠實邊界與限制</a>
+<a class="" href="reference.html">參考與完整手冊</a>
+</nav>
+<main>
+<h1>讀懂弱點報告</h1>
+<p class="sub">報告每個區塊與欄位的意思,以及哪些數字要小心解讀。</p>
+
+<div class="note">這頁教你讀 <code>vix diagnose</code> 產出的 <code>weakness_report.html</code>。每個區塊都附「怎麼用」與「怎麼<b>不要</b>被誤導」。</div>
+<figure><img src="img/report_full.png" alt="完整弱點報告"><figcaption>完整報告(多類別範例)。下面逐區塊說明。</figcaption></figure>
+
+<h2 class="sec">① 健康度橫幅 + 現在做這個</h2>
+<p><b>RED / AMBER / GREEN</b> 一眼看出整體狀況,後面「現在做這個」給出最高優先的動作(覆核自信誤報、補某類樣本…)。最弱的類別與其 AP 也在這裡。</p>
+
+<h2 class="sec">② 未覆核參照的誠實橫幅</h2>
+<div class="ref">⚠ 參照 = 你匯入的標籤(未經 VIX 覆核)。下方「誤報/漏報」是「<b>模型 vs 你的標籤</b>」的不一致,<b>不是</b>「模型 vs 真實世界」。一個「誤報」可能其實是<b>你的標籤漏框/標錯</b>而模型是對的。要分辨,用 <code>--audit</code>。</div>
+<p>這不是免責聲明客套話 —— 它是 VIX 的核心原則。報告不會把你的標籤當成真理。</p>
+
+<h2 class="sec">③ per-class AP(弱 → 強)</h2>
+<p>最該關注的表。<b>AP</b>(Average Precision)是該類偵測的綜合準確度,0~1 越高越好;<b>mAP</b> 是所有類別 AP 的平均。每一列:該類 <b>AP</b>、<b>n_gt</b>(這類有幾個 GT 框)、<b>漏報型態分佈</b>(classification 分類錯 / localization 框不準 / missed 完全沒偵到)、<b>最常被混淆成哪一類</b>。<b>弱的排在最上面</b>,所以你一眼知道先修哪類。</p>
+<div class="note"><b>Δ(同 eval set)</b> 欄:當這次和上次是在<b>同一個 eval set</b> 上跑(見 <a href="loop.html">修了有沒有幫助</a>)才會出現,顯示每類 AP 的變化。<b>n_gt &lt; 20 的類別</b>會標 <b>「n少不穩」而不畫 ↑/↓ 箭頭</b> —— 因為 6 個框的 +0.5 多半是雜訊,不是真的進步(範例中的 traffic_light 就是這樣)。</div>
+
+<h2 class="sec">④ 漏報型態 / 混淆</h2>
+<p>VIX 會把每個錯誤<b>分類且不重複計數</b>:同一個「框太鬆」只算一次 localization 漏報,不會又算一次 background 誤報。混淆區塊列出「真實 A 被偵成 B」最多的配對 —— 例如 <code>bicycle → motorcycle (6)</code>,告訴你模型把腳踏車當機車。</p>
+
+<h2 class="sec">⑤ 最自信卻錯(confident-wrong)</h2>
+<p>模型高信心、但在你標籤裡找不到對應框的偵測。這些最該優先人工看。<b>但記得 ②:</b><code>type=background</code> 代表「你的標籤這裡沒有框」→ 可能是模型幻覺,<b>也可能是你漏標的 GT</b>。</p>
+<div class="warn"><b>所有「該標這些」的排序都是 PROXY:</b>因為 VIX 不重訓,它給的是「嫌疑/優先順序」,<b>不是</b>「標了就會讓 mAP 上升多少」的保證。</div>
+<div class="check"><b>你會讀報告了。</b>想知道「修了到底有沒有讓模型變好」?那需要正確的量法 —— 看下一頁。</div>
+
+<div class="cta"><h3>下一步</h3><p>學會用凍結的 eval set 誠實量測改善。</p><a href="loop.html">→ 修了有沒有幫助?</a></div>
+<footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·
+由 <code>docs/examples/gen_site.py</code> 產生。</footer>
+</main></div></body></html>

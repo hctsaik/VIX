@@ -35,6 +35,9 @@ class Tag:
     PROPOSAL = "proposal"        # low-confidence YOLO proposal under bank-audit (isolated from golden routing)
     HARD_POSITIVE = "hard_positive"  # bank-audit defect-like/unknown staging set (human-confirmed -> golden)
     ADMITTED = "admitted"        # batch formally gated + admitted into the training pool (batch-admit; reversible)
+    PROVISIONAL = "provisional"  # imported (human-UNverified) labels: a reference for diagnosis only. NEVER
+    #   golden — must not feed calibrate/route/gate/snapshot/export (which read GOLDEN), or VIX would trust
+    #   the labels-under-audit as ground truth. Promote to GOLDEN only via the human-confirm path.
 
 
 @dataclass

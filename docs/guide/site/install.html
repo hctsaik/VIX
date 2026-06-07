@@ -1,0 +1,58 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>安裝 · VIX 文件</title>
+<link rel="stylesheet" href="assets/site.css">
+</head><body><div class="layout">
+<nav class="toc">
+<a class="brand" href="index.html">VIX 文件</a>
+<p class="tagline">yolo val 給你 mAP;VIX 告訴你「該修什麼」</p>
+<h2>入門</h2>
+<a class="" href="index.html">首頁 / 5 分鐘上手</a>
+<a class="active" href="install.html">安裝</a>
+<h2>核心流程</h2>
+<a class="" href="diagnose.html">診斷你的模型 <span class="r">A</span></a>
+<a class="" href="report.html">讀懂弱點報告 <span class="r">A</span></a>
+<a class="" href="formats.html">輸入格式 (YOLO/VOC/COCO) <span class="r">A</span></a>
+<a class="" href="loop.html">修了有沒有幫助? <span class="r">A</span></a>
+<h2>進階 (需 DINOv2 / App)</h2>
+<a class="" href="audit.html">稽核標籤本身 <span class="r">B</span></a>
+<a class="" href="app.html">在 App 裡覆核 <span class="r">B</span></a>
+<h2>觀念 / 參考</h2>
+<a class="" href="honesty.html">誠實邊界與限制</a>
+<a class="" href="reference.html">參考與完整手冊</a>
+</nav>
+<main>
+<h1>安裝</h1>
+<p class="sub">兩條路線:核心(Tier A,推薦先裝)與 Tier-2(App / DINOv2)。</p>
+
+<div class="note">VIX 有兩條安裝路線。<b>絕大多數新手只需要第一條(Tier A)</b> —— 它能跑 <code>vix diagnose</code> 的全部 headline 功能,無需 FiftyOne、無需 GPU、可離線。</div>
+
+<h2 class="sec">路線 1:核心(Tier A,推薦先裝這個)</h2>
+<pre><code>git clone &lt;repo&gt; &amp;&amp; cd VIX
+pip install -e .          # 純 Python:numpy + pyyaml + pillow
+vix --help               # 應看到 ~16 個常用指令(其餘進階指令已隱藏)
+vix                      # 印出 5 分鐘上手指引</code></pre>
+<p>要用 <code>vix diagnose --weights</code> 實際跑你的模型,需要你原本的推論環境。若你<b>還沒有</b> <code>yolo val</code> 的環境:</p>
+<pre><code>pip install ultralytics      # 只有在你需要 VIX 替你跑模型時才需要</code></pre>
+<p>若你已經有推論環境(<span class="pill">ultralytics</span> / <span class="pill">torch</span>),通常什麼都不用再裝。</p>
+<div class="ref">速度:Tier A 的瓶頸是「你的模型推論」那一步,和你平常 <code>yolo val</code> 同量級(CPU 上每張數十毫秒~數百毫秒)。VIX 自己的比對是純 Python、很快。大資料集建議先在 val 子集上試跑。</div>
+<div class="tip">沒有模型、只有 predictions+GT 的 JSONL?用 <code>vix eval-ingest results.jsonl</code> —— 純標準函式庫,真正離線,連 torch 都不用。見 <a href="formats.html">輸入格式</a>。</div>
+
+<h2 class="sec">路線 2:Tier-2(App + DINOv2 嵌入稽核)</h2>
+<p>只有在你要用 <b>FiftyOne 視覺化 App</b>(<a href="app.html">在 App 裡覆核</a>)或 <b>嵌入式標籤稽核</b>(<code>--audit</code>,見 <a href="audit.html">稽核標籤</a>)時才需要。</p>
+<div class="warn"><b>Python 版本很重要:</b>FiftyOne 目前需要 <b>Python 3.11</b>(別用 3.13/3.14)。本專案用一個獨立的 <code>.venv311</code> 虛擬環境跑 Tier-2。</div>
+<pre><code># 在 Python 3.11 的虛擬環境裡
+pip install -r requirements-tier2.txt   # fiftyone + torch + playwright(版本已釘選)
+# DINOv2 權重第一次使用會自動下載一次(需網路);air-gapped 請先預先放好快取
+vix diagnose ./dataset --labels voc --weights best.pt --audit
+vix app                                  # 開啟 FiftyOne + @vix/review 外掛</code></pre>
+<div class="ref">完整跨機器安裝、CIFAR demo、疑難排解表:見 <code>docs/SETUP_OTHER_MACHINE.md</code>。</div>
+
+<h2 class="sec">裝好了嗎?自我檢查</h2>
+<div class="check"><b>Tier A OK:</b> <code>vix --help</code> 列出 <code>diagnose / import-labels / eval-run …</code>;<code>vix status</code> 不報錯。<br>
+<b>Tier B OK:</b> <code>python -c "import fiftyone"</code> 成功;<code>vix app</code> 能開瀏覽器。</div>
+
+<div class="cta"><h3>下一步</h3><p>裝好核心後,用一行指令對你的模型 + 資料產出弱點報告。</p><a href="diagnose.html">→ 診斷你的模型</a></div>
+<footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·
+由 <code>docs/examples/gen_site.py</code> 產生。</footer>
+</main></div></body></html>

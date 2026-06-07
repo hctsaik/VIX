@@ -29,8 +29,25 @@ from .types import Tag
 log = get_logger("vix.cli")
 
 _QUICKSTART = """\
-VIX 快速上手(5 分鐘)
+VIX 快速上手
 =====================
+最快得到價值(一行,免 FiftyOne;你已有的標籤 + 你的模型):
+  vix diagnose ./dataset --labels yolo --weights best.pt --data-yaml data.yaml
+    → 匯入你的標籤 + 跑你的模型 → 「該修什麼」報告:per-class AP(弱→強)、
+      typed 漏報/誤報、混淆、最自信卻錯的影像。--labels 支援 yolo|voc|coco。
+  只有 predictions+GT 的 JSONL?  vix eval-ingest results.jsonl   (純離線)
+  想稽核標籤本身(需 DINOv2)?    vix diagnose ./dataset --labels voc --audit
+  (誠實:匯入的標籤未經覆核,報告中「誤報」可能是你的標籤漏框;不會當成 golden。)
+
+閉環(修了到底有沒有幫助?):
+  1. vix diagnose … → 看報告/worklist 哪些類弱、哪些框疑似錯
+  2. 在你的標註工具修「訓練集」標籤 → 外部重訓你的模型
+  3. 在**凍結的 held-out eval set** 上再 vix diagnose 一次 → 報告顯示 per-class AP 的 Δ
+     (或 vix ap-trend 看跨輪趨勢)
+  注意:eval set 的標籤一改,eval_set_hash 就變 → 前後不可比;務必用「不動的」eval set 量改善。
+
+────────────────────────────────────────────────
+進階:完整策展閘門(golden/anchor 世界觀)
 核心概念:
   golden  已確認、可進訓練的資料(事實基準)
   anchor  從 golden 凍結的一小份,永不訓練,用來偵測定義漂移
@@ -54,6 +71,17 @@ VIX 快速上手(5 分鐘)
 新人看現況:  vix report ./out   (自動對比上一份報告,含品質分數與下一步建議)
 完整指令:    vix --help
 """
+
+
+def _resolve_names(args):
+    """Class names from --names (comma list) or --data-yaml (YOLO names: list/dict). None if neither."""
+    if getattr(args, "names", None):
+        return [s.strip() for s in args.names.split(",") if s.strip()]
+    dy = getattr(args, "data_yaml", None)
+    if dy:
+        import yaml
+        return yaml.safe_load(Path(dy).read_text(encoding="utf-8")).get("names")
+    return None
 
 
 def _load_json_arg(s: str):
@@ -91,7 +119,9 @@ class _GoldenPathParser(argparse.ArgumentParser):
     70-verb usage wall (U1). Other parse errors (bad flags within a known verb) behave normally."""
 
     def error(self, message: str):
-        if message.startswith("argument cmd:"):  # unknown top-level verb (argparse invalid-choice on cmd)
+        # unknown top-level verb -> golden path, not the verb wall. The subparsers dest is "cmd"
+        # but the usage metavar is "<command>", so argparse phrases the invalid-choice either way.
+        if message.startswith("argument cmd:") or message.startswith("argument <command>:"):
             sys.stderr.write(_QUICKSTART + "\n完整指令:vix --help\n")
             self.exit(2)
         super().error(message)
@@ -102,7 +132,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workspace", default=None, help="workspace dir (default ./vix_workspace or $VIX_WORKSPACE)")
     p.add_argument("--adapter", choices=["auto", "fiftyone", "memory"], default="auto")
     p.add_argument("--log-level", default="INFO")
-    sub = p.add_subparsers(dest="cmd", required=False)  # bare `vix` -> golden path (U1), not an error
+    # metavar collapses the usage line's {verb1,verb2,...} wall to <command> (two-tier help)
+    sub = p.add_subparsers(dest="cmd", required=False, metavar="<command>")  # bare `vix` -> golden path (U1)
 
     sp = sub.add_parser("ingest", help="import a folder of images into the dataset")
     sp.add_argument("folder")
@@ -115,6 +146,36 @@ def _build_parser() -> argparse.ArgumentParser:
     si = sub.add_parser("infer", help="run YOLO -> detections (or --synthetic for an offline demo)")
     si.add_argument("--weights", default=None)
     si.add_argument("--synthetic", action="store_true", help="seed deterministic synthetic detections (offline demo/CI)")
+
+    # --- on-ramp: import EXISTING labels + run YOUR model -> weakness report (no golden worldview) ---
+    sdg = sub.add_parser("diagnose",
+                         help="一鍵:匯入你的標籤+(跑你的模型)→ 該修什麼的弱點/歸因報告(免 golden/FiftyOne)")
+    sdg.add_argument("folder", help="images folder (with sibling YOLO labels/ or VOC annotations/, or --json for COCO)")
+    sdg.add_argument("--labels", default="yolo", choices=["yolo", "voc", "coco"], help="ground-truth label format")
+    sdg.add_argument("--weights", default=None, help="your model .pt — Tier A: per-class FP/FN + AP + confusion")
+    sdg.add_argument("--audit", action="store_true", help="Tier B: embedding label-audit + failure attribution (needs DINOv2)")
+    sdg.add_argument("--names", default=None, help="comma-separated class names (YOLO numeric labels)")
+    sdg.add_argument("--data-yaml", default=None, help="YOLO data.yaml (for class names)")
+    sdg.add_argument("--json", dest="coco_json", default=None, help="COCO instances.json path")
+    sdg.add_argument("--label-dir", default=None, help="YOLO labels dir if not the standard sibling labels/")
+    sdg.add_argument("--out", default=None, help="report output path (default workspace/weakness_report.md)")
+
+    sil = sub.add_parser("import-labels", help="import existing GT labels (yolo/voc/coco) as a diagnosis reference")
+    sil.add_argument("folder")
+    sil.add_argument("--labels", default="yolo", choices=["yolo", "voc", "coco"])
+    sil.add_argument("--batch", default="import")
+    sil.add_argument("--names", default=None, help="comma-separated class names (YOLO numeric labels)")
+    sil.add_argument("--data-yaml", default=None)
+    sil.add_argument("--json", dest="coco_json", default=None, help="COCO instances.json path")
+    sil.add_argument("--label-dir", default=None, help="YOLO labels dir if not the standard sibling labels/")
+    sil.add_argument("--as", dest="as_", default="reference", choices=["reference", "eval"],
+                     help="reference=provisional diagnosis ref (NOT golden); eval=held-out eval set")
+
+    ser = sub.add_parser("eval-run", help="run YOUR model on imported-GT images -> eval (the yolo-val bridge)")
+    ser.add_argument("--weights", required=True)
+    ser.add_argument("--imgsz", type=int, default=640)
+    ser.add_argument("--conf", type=float, default=0.05)
+    ser.add_argument("--iou", type=float, default=0.5)
     sub.add_parser("embed", help="DINOv2 embeddings + kNN index")
     sub.add_parser("calibrate", help="compute per-class percentile thresholds")
     sub.add_parser("route", help="route candidates to pass/review")
@@ -334,7 +395,24 @@ def _build_parser() -> argparse.ArgumentParser:
     sba.add_argument("--novelty-radius", type=float, default=0.30)
     sba.add_argument("--dedup-distance", type=float, default=0.05)
     sba.add_argument("--top", type=int, default=50)
+
+    # Two-tier --help (landable-system): show only the daily core; HIDE the long tail from the
+    # default help (governance / MLOps-textbook / Tier-2 verbs) WITHOUT deleting them. We drop the
+    # non-core pseudo-actions from the help listing only — every verb stays in `choices` /
+    # `_name_parser_map`, so all remain registered and dispatchable. Zero deletions, zero behaviour
+    # change. (help=SUPPRESS on a subaction renders "==SUPPRESS==", so we filter the list instead.)
+    sub._choices_actions = [a for a in sub._get_subactions() if a.dest in _CORE_VERBS]
+    p.epilog = "僅顯示常用指令;另有 ~50 個進階指令(治理/分析/Tier-2),直接執行或 `vix <verb> --help`。"
     return p
+
+
+# The on-ramp + the daily-driver spine. The other ~50 verbs remain registered but hidden from
+# `vix --help` (see two-tier help above) — run any of them directly, or `vix <verb> --help`.
+_CORE_VERBS = {
+    "diagnose", "import-labels", "eval-run",          # the on-ramp (import your labels + run your model)
+    "ingest", "infer", "embed", "calibrate", "route", "gate", "export",  # the curation spine
+    "review-queue", "weakness-report", "audit-labels", "report", "status", "app",  # act / read
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -394,6 +472,41 @@ def _main(argv: list[str] | None = None) -> int:
 
             n = run_yolo(adapter, cfg, args.weights)
             print(f"inferred {n} images")
+
+    elif args.cmd == "diagnose":
+        res = pipeline.diagnose(
+            adapter, cfg, args.folder, labels_fmt=args.labels, weights=args.weights,
+            audit=args.audit, names=_resolve_names(args), json_path=args.coco_json,
+            label_dir=args.label_dir, out_path=args.out)
+        imp, s = res["import"], res.get("summary") or {}
+        print(f"匯入 {imp['n_images']} 影像 / {imp['n_boxes']} 框 / {len(imp['classes'])} 類(參照=未覆核標籤)")
+        if "eval" in res:
+            ev = res["eval"]
+            print(f"Tier A 模型評估:mAP@0.5={ev['mAP']}  loc_gap={ev.get('loc_gap')}  per-class AP={ev['per_class_ap']}")
+        print(f"健康度:{s.get('health', '?')} ｜ 最弱:{s.get('weakest') or '-'}")
+        for t in (s.get("todo") or []):
+            print(f"  → {t}")
+        print(f"報告:{res.get('report_md')}（同名 .html 可瀏覽）")
+        # close the loop (Round 5): state-aware next-step — don't promise a Δ the first run can't produce
+        if res.get("comparable"):
+            print("下一步(閉環):本輪與上次同一 eval set → 報告已含 per-class AP 的 Δ;"
+                  "繼續修標→重訓→在同一 eval set 再跑即可追蹤。")
+        else:
+            print("下一步(閉環):這是本輪基準(首份或與上次不可比)。**凍結這個 eval set**,"
+                  "在你的標註工具修「訓練集」標籤 → 外部重訓 → 在同一 eval set 再跑一次 vix diagnose,"
+                  "報告就會出現 per-class AP 的 Δ(或用 vix ap-trend)。")
+            print("　注意:eval set 的標籤一改,eval_set_hash(含 GT)就變 → 前後不可比;務必用不動的 held-out eval set。")
+
+    elif args.cmd == "import-labels":
+        res = pipeline.import_labels(
+            adapter, cfg, args.folder, fmt=args.labels, names=_resolve_names(args),
+            batch=args.batch, as_=args.as_, json_path=args.coco_json, label_dir=args.label_dir)
+        print(f"imported {res['n_images']} images, {res['n_boxes']} boxes, "
+              f"{len(res['classes'])} classes (as {args.as_}: {'provisional reference, NOT golden' if args.as_=='reference' else 'eval'})")
+
+    elif args.cmd == "eval-run":
+        res = pipeline.eval_run(adapter, cfg, args.weights, imgsz=args.imgsz, conf=args.conf, iou_thr=args.iou)
+        print(f"eval-run: {res.get('n_pred')} preds  mAP@0.5={res['mAP']}  per-class AP={res['per_class_ap']}")
 
     elif args.cmd == "embed":
         adapter.compute_embeddings(cfg.dinov2_model_key)

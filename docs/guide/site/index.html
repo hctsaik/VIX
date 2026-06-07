@@ -1,0 +1,72 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VIX:給第一次使用的 CV 工程師 · VIX 文件</title>
+<link rel="stylesheet" href="assets/site.css">
+</head><body><div class="layout">
+<nav class="toc">
+<a class="brand" href="index.html">VIX 文件</a>
+<p class="tagline">yolo val 給你 mAP;VIX 告訴你「該修什麼」</p>
+<h2>入門</h2>
+<a class="active" href="index.html">首頁 / 5 分鐘上手</a>
+<a class="" href="install.html">安裝</a>
+<h2>核心流程</h2>
+<a class="" href="diagnose.html">診斷你的模型 <span class="r">A</span></a>
+<a class="" href="report.html">讀懂弱點報告 <span class="r">A</span></a>
+<a class="" href="formats.html">輸入格式 (YOLO/VOC/COCO) <span class="r">A</span></a>
+<a class="" href="loop.html">修了有沒有幫助? <span class="r">A</span></a>
+<h2>進階 (需 DINOv2 / App)</h2>
+<a class="" href="audit.html">稽核標籤本身 <span class="r">B</span></a>
+<a class="" href="app.html">在 App 裡覆核 <span class="r">B</span></a>
+<h2>觀念 / 參考</h2>
+<a class="" href="honesty.html">誠實邊界與限制</a>
+<a class="" href="reference.html">參考與完整手冊</a>
+</nav>
+<main>
+<h1>VIX:給第一次使用的 CV 工程師</h1>
+<p class="sub">yolo val 給你 mAP;VIX 告訴你「該修什麼」—— 離線、一行指令、不用重訓。</p>
+
+<div class="note">這份文件給<b>第一次使用 VIX 的電腦視覺工程師</b>。照著讀、照著貼上指令,十分鐘內就能對「你自己的模型 + 你自己的資料」產出一份「該修什麼」的報告。<span class="tag a">Tier A = 離線、免 FiftyOne/DINOv2</span><span class="tag b">Tier B = 需 DINOv2 / FiftyOne App</span></div>
+
+<h2 class="sec">VIX 是什麼?</h2>
+<p><code>yolo val</code> 會告訴你 mAP=0.72,但<b>不會</b>告訴你:哪一類最弱、為什麼弱(漏報?混淆?框太鬆?)、該先看哪些圖。
+<b>VIX 把單一個 mAP 變成一張可行動的待辦清單</b> —— 離線、一行指令、不用重訓、不用架服務。</p>
+
+<h2 class="sec">5 分鐘上手(最短路徑)</h2>
+<div class="ref">前提:你有 (1) 一個影像資料夾、(2) 對應的標籤(YOLO <code>labels/*.txt</code> / Pascal VOC <code>annotations/*.xml</code> / COCO <code>instances.json</code>)、(3) 你訓練好的模型 <code>best.pt</code>。沒有 FiftyOne、沒有 GPU 也能跑(Tier A)。</div>
+<pre><code># 安裝核心(任何機器都能跑 Tier A)
+git clone &lt;repo&gt; &amp;&amp; cd VIX
+pip install -e .
+# 要實際跑模型才需要(若你已有 yolo val 環境就略過):
+pip install ultralytics
+
+# 一行:匯入你的標籤 + 跑你的模型 → 弱點報告
+vix diagnose ./dataset --labels yolo --weights best.pt --data-yaml data.yaml</code></pre>
+<div class="ref"><code>data.yaml</code> 就是你訓練時用的那個(內含 <code>names:</code> 類名)。沒有的話,改用 <code>--names car,person,bike</code> 直接給類名(類別是數字 0/1/2 時必填其一)。</div>
+<div class="tip">報告會寫到目前目錄下自動建立的 <code>vix_workspace/weakness_report.html</code>(可用 <code>--out</code> 改路徑)。VIX <b>只讀不寫</b>你的影像與標籤,不會就地改動你的資料。</div>
+<p>終端會印出像這樣的摘要,並寫出一份可瀏覽的 HTML 報告:</p>
+<pre><code>匯入 133 影像 / 412 框 / 1 類(參照=未覆核標籤)
+Tier A 模型評估:mAP@0.5=0.7234  loc_gap=0.04  per-class AP={'pothole': 0.7234}
+健康度:AMBER ｜ 最弱:pothole AP=0.72 (n_gt=412)
+  → 覆核 12 個自信誤報
+報告:vix_workspace/weakness_report.md(同名 .html 可瀏覽)
+下一步(閉環):這是本輪基準… 凍結這個 eval set…</code></pre>
+
+<h2 class="sec">這份報告長什麼樣?</h2>
+<figure><a href="report.html"><img src="img/report_full.png" alt="VIX 弱點報告範例"></a>
+<figcaption>真實的 <code>vix diagnose</code> 報告(多類別範例)。最上方是健康度與「現在做這個」,接著是 per-class AP(弱→強)、與上次同一 eval set 的 Δ、混淆、最自信卻錯的影像。點圖看「讀懂報告」。</figcaption></figure>
+
+<h2 class="sec">接下來看哪裡</h2>
+<div class="cards">
+<a href="install.html"><b>安裝</b><span>核心(Tier A)與 Tier-2(App/DINOv2)兩條路</span></a>
+<a href="diagnose.html"><b>診斷你的模型 ★</b><span>on-ramp 的完整說明與選項</span></a>
+<a href="report.html"><b>讀懂弱點報告</b><span>每個欄位的意思 + 誠實 hedge</span></a>
+<a href="loop.html"><b>修了有沒有幫助?</b><span>用凍結 eval set 看 per-class Δ</span></a>
+<a href="audit.html"><b>稽核標籤本身</b><span>用 DINOv2 嵌入找疑似標錯</span></a>
+<a href="app.html"><b>在 App 裡覆核</b><span>FiftyOne 視覺化點選工作流</span></a>
+</div>
+<div class="warn"><b>一句話誠實聲明:</b>你<b>匯入的標籤是「未覆核的參照」</b>,不是真理。報告裡的「誤報」有可能其實是<b>你的標籤漏框</b>而模型是對的。詳見 <a href="honesty.html">誠實邊界</a>。</div>
+
+
+<footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·
+由 <code>docs/examples/gen_site.py</code> 產生。</footer>
+</main></div></body></html>

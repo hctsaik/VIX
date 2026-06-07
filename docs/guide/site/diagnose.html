@@ -1,0 +1,66 @@
+<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>診斷你的模型 · VIX 文件</title>
+<link rel="stylesheet" href="assets/site.css">
+</head><body><div class="layout">
+<nav class="toc">
+<a class="brand" href="index.html">VIX 文件</a>
+<p class="tagline">yolo val 給你 mAP;VIX 告訴你「該修什麼」</p>
+<h2>入門</h2>
+<a class="" href="index.html">首頁 / 5 分鐘上手</a>
+<a class="" href="install.html">安裝</a>
+<h2>核心流程</h2>
+<a class="active" href="diagnose.html">診斷你的模型 <span class="r">A</span></a>
+<a class="" href="report.html">讀懂弱點報告 <span class="r">A</span></a>
+<a class="" href="formats.html">輸入格式 (YOLO/VOC/COCO) <span class="r">A</span></a>
+<a class="" href="loop.html">修了有沒有幫助? <span class="r">A</span></a>
+<h2>進階 (需 DINOv2 / App)</h2>
+<a class="" href="audit.html">稽核標籤本身 <span class="r">B</span></a>
+<a class="" href="app.html">在 App 裡覆核 <span class="r">B</span></a>
+<h2>觀念 / 參考</h2>
+<a class="" href="honesty.html">誠實邊界與限制</a>
+<a class="" href="reference.html">參考與完整手冊</a>
+</nav>
+<main>
+<h1>診斷你的模型</h1>
+<p class="sub">vix diagnose —— VIX 最重要、也是新手唯一必學的指令。</p>
+
+<div class="note">這是 VIX 最重要的一個指令,也是新手唯一需要先學會的東西。它把<b>你既有的標籤</b>和<b>你自己的模型</b>串起來,一行就產出弱點報告。<span class="tag a">Tier A = 離線、免 FiftyOne/DINOv2</span><span class="tag b">Tier B = 需 DINOv2 / FiftyOne App</span></div>
+
+<h2 class="sec">一行指令</h2>
+<pre><code>vix diagnose ./dataset --labels yolo --weights best.pt --data-yaml data.yaml</code></pre>
+<p>它依序做了四件事(你不用一步步下指令):</p>
+<ol class="steps">
+<li><b>匯入你的標籤</b>(<code>import-labels</code>):用<b>內容雜湊</b>把標籤對到影像(不是用檔名,避免重名出錯)。匯入的標籤標記為「未覆核參照」,<b>永遠不會</b>被當成 golden。</li>
+<li><b>跑你的模型</b>(<code>eval-run</code>):用你的 <code>best.pt</code> 在這些影像上推論。</li>
+<li><b>比對</b>:算出 per-class AP、typed 漏報/誤報、混淆矩陣、最自信卻錯的偵測。</li>
+<li><b>寫報告</b>:<code>weakness_report.md</code> 與可瀏覽的 <code>.html</code>。</li>
+</ol>
+
+<h2 class="sec">常用選項</h2>
+<table>
+<tr><th>選項</th><th>用途</th></tr>
+<tr><td><code>--labels yolo|voc|coco</code></td><td>你的標籤格式(見 <a href="formats.html">輸入格式</a>)</td></tr>
+<tr><td><code>--weights best.pt</code></td><td>你的模型(Tier A:算 FP/FN/AP/混淆)。省略則只匯入標籤</td></tr>
+<tr><td><code>--data-yaml data.yaml</code> 或 <code>--names a,b,c</code></td><td>YOLO 數字類別 → 可讀類名</td></tr>
+<tr><td><code>--json instances.json</code></td><td>COCO 標註檔路徑</td></tr>
+<tr><td><code>--audit</code></td><td><span class="tag b">Tier B</span> 加做嵌入式標籤稽核 + 失敗歸因(需 DINOv2)</td></tr>
+<tr><td><code>--out 路徑</code></td><td>報告輸出位置(預設 <code>workspace/weakness_report.md</code>)</td></tr>
+</table>
+
+<h2 class="sec">你會在終端看到</h2>
+<pre><code>匯入 133 影像 / 412 框 / 1 類(參照=未覆核標籤)
+Tier A 模型評估:mAP@0.5=0.7234  loc_gap=0.04  per-class AP={'pothole': 0.7234}
+健康度:AMBER ｜ 最弱:pothole AP=0.72 (n_gt=412)
+  → 覆核 12 個自信誤報
+報告:.../weakness_report.md(同名 .html 可瀏覽)
+下一步(閉環):這是本輪基準(首份或與上次不可比)。**凍結這個 eval set**…</code></pre>
+<figure><img src="img/report_tldr.png" alt="報告最上方的健康度橫幅與待辦"><figcaption>報告最上方:健康度(RED/AMBER/GREEN)+「現在做這個」待辦。</figcaption></figure>
+
+<div class="warn"><b>找不到框?</b>若你指到錯的資料夾,VIX 會<b>大聲報錯而不是給你一份假的「全部健康」報告</b>,並告訴你各格式該放哪(yolo: <code>labels/</code>;voc: <code>annotations/</code>;coco: <code>--json</code>)。</div>
+<div class="check"><b>你現在應該有:</b>一個 <code>weakness_report.html</code>,最弱的類別排在 per-class 表最上面。接著學怎麼讀它。</div>
+
+<div class="cta"><h3>下一步</h3><p>報告每個區塊與欄位是什麼意思,以及哪些數字要小心解讀。</p><a href="report.html">→ 讀懂弱點報告</a></div>
+<footer>VIX 新手文件 · 本頁可能落後於程式碼,CLI 一律以 <code>vix --help</code> 為準 ·
+由 <code>docs/examples/gen_site.py</code> 產生。</footer>
+</main></div></body></html>
