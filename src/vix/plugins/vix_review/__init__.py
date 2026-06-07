@@ -340,6 +340,51 @@ class FlagLabelIssues(foo.Operator):
         return types.Property(out)
 
 
+class AuditLabelErrors(foo.Operator):
+    """DINO cross-class label-error audit: lists samples whose DINOv2 kNN-majority label disagrees with
+    their given label ("標成 X 但鄰居多為 Y"), tags them vixq:label_error, and shows the suggested class.
+    Needs >=2 classes + computed embeddings (run `vix embed` first). PROXY — review, never auto-relabel."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="audit_label_errors", label="VIX: 找標錯的類別(DINO)", dynamic=True)
+
+    def resolve_input(self, ctx):
+        inputs = types.Object()
+        inputs.int("top", default=50, label="最多列出幾筆")
+        return types.Property(inputs, view=types.View(label="DINO 跨類標錯稽核(需先 vix embed,≥2 類)"))
+
+    def execute(self, ctx):
+        cfg, ad = Config(), _adapter(ctx)
+        try:
+            issues = pipeline.audit_labels(ad, cfg)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"稽核失敗(先 vix embed 計算嵌入):{exc}"}
+        for i in issues:
+            try:
+                ad.apply_tags(i.id.split(":")[0], ["vixq:label_error"])
+            except Exception:  # noqa: BLE001
+                pass
+        rows = [{"id": i.id.split(":")[0], "given": i.given_label, "suggested": i.suggested_label,
+                 "disagreement": round(i.disagreement, 2)} for i in issues[:int(ctx.params.get("top") or 50)]]
+        return {"n": len(issues), "rows": rows,
+                "hint": "vixq:label_error 已標記;PROXY,逐筆覆核是否真的標錯類別,勿自動改標" if rows
+                else "未發現跨類標錯(或單一類別 / 尚未 vix embed)"}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        out.str("error", label="錯誤")
+        out.int("n", label="疑似標錯類別數")
+        tbl = types.TableView()
+        tbl.add_column("id", label="樣本")
+        tbl.add_column("given", label="目前標成")
+        tbl.add_column("suggested", label="DINO 建議(鄰居多為)")
+        tbl.add_column("disagreement", label="不一致度")
+        out.list("rows", types.Object(), view=tbl, label="標成 X → 建議 Y")
+        out.str("hint", label="怎麼看")
+        return types.Property(out)
+
+
 class FlagLooseBoxes(foo.Operator):
     """Opt-in PIXEL-level box-tightness audit (the one check box_qa structurally can't do): prompts a
     SAM mask per golden box and flags boxes whose GT doesn't hug the object (low IoU) as vixq:loose_box.
@@ -388,6 +433,7 @@ def register(p):
     p.register(ExplainSample)
     p.register(GenerateWeaknessReport)
     p.register(FlagLabelIssues)
+    p.register(AuditLabelErrors)
     p.register(FlagLooseBoxes)
     p.register(VixReportPanel)
     p.register(VixQueuePanel)

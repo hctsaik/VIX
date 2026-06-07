@@ -549,6 +549,19 @@ def test_op_generate_weakness_report(live):
     assert _chain_ok(live.cfg)
 
 
+def test_op_audit_label_errors(live):
+    """GUI cross-class label-error audit: mislabel a golden sample's class -> the operator flags it via
+    embedding kNN and reports given->suggested (the standout 標成 X 但鄰居多為 Y), and tags vixq:label_error."""
+    s = live.ds.match({"vix_hash": "vert0"}).first()
+    s["yolo_detections"].detections[0].label = "horiz"  # wrong class (its embedding is a 'vert')
+    s.save()
+    out = PLUGIN.AuditLabelErrors().execute(_ctx(live.ds, params={"top": 20}))
+    assert "error" not in out
+    row = next((r for r in out["rows"] if r["id"] == "vert0"), None)
+    assert row and row["given"] == "horiz" and row["suggested"] == "vert"  # DINO/embedding suggests the true class
+    assert "vixq:label_error" in live.ds.match({"vix_hash": "vert0"}).first().tags
+
+
 def test_op_flag_label_issues(live):
     """GUI 'flag inaccurate labels' operator: audit_labels + box_qa -> vixq:* tags; no crash, chain valid,
     no review write (it's a read-only audit that only tags)."""
