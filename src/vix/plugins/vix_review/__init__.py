@@ -501,7 +501,7 @@ class BuildSimilarity(foo.Operator):
     def resolve_placement(self, ctx):
         return types.Placement(
             types.Places.SAMPLES_GRID_ACTIONS,
-            types.Button(label="VIX: 建立相似搜尋索引", icon="/assets/similar.svg", prompt=True),
+            types.Button(label="VIX: 建立相似搜尋索引", icon="/assets/simindex.svg", prompt=True),
         )
 
     def resolve_input(self, ctx):
@@ -534,13 +534,13 @@ class BuildSimilarity(foo.Operator):
             return {"error": f"建立失敗:{exc}"}
         try:
             ctx.ops.reload_dataset()
-            ctx.ops.notify("相似搜尋索引完成。到 Samples 分頁:勾選一個『框』(或在展開圖中選一個 label)"
-                           "→ 點工具列的放大鏡 → 全資料集會按該物件相似度重排。", variant="success")
+            ctx.ops.notify("相似搜尋索引完成。選一張有框的影像(或在展開圖選一個 label)→ 點工具列的"
+                           "🔎『找相似物件』按鈕,就用你的 DINO 排出最像的物件(不需 Enterprise)。", variant="success")
         except Exception:  # noqa: BLE001
             pass
         return {"brain_key": brain_key,
-                "hint": "用法:Samples 分頁勾一個框 → 放大鏡(Sort by similarity)→ 看最像的物件。"
-                        "這是物件級(非整張圖),找的是長得像的瑕疵。"}
+                "hint": "用法:選一張有框的影像 → 工具列『VIX: 找相似物件』→ App 切到用你 DINO 排序的相似物件。"
+                        "這是物件級(非整張圖),找的是長得像的瑕疵;不要用內建的『Similarity Search』面板(那是 Enterprise)。"}
 
     def resolve_output(self, ctx):
         out = types.Object()
@@ -550,6 +550,72 @@ class BuildSimilarity(foo.Operator):
             return types.Property(out)
         out.str("brain_key", label="索引名稱(brain key)")
         out.str("hint", label="怎麼用")
+        return types.Property(out)
+
+
+class FindSimilar(foo.Operator):
+    """Find-similar using YOUR DINO index — the OSS replacement for the App's Enterprise-gated
+    'Similarity Search' panel. Select an image (or a label) and this re-views the dataset as the
+    object PATCHES sorted by similarity to that object, via the vix_patch_sim index (sklearn exact-NN
+    over DINOv2 crops). No Enterprise, no zoo model, fully offline. Zero ranking logic here — it just
+    calls FiftyOne's sort_by_similarity on the index BuildSimilarity created and drives the view."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="find_similar", label="VIX: 找相似物件(我的 DINO)", dynamic=True)
+
+    def resolve_placement(self, ctx):
+        return types.Placement(
+            types.Places.SAMPLES_GRID_ACTIONS,
+            types.Button(label="VIX: 找相似物件", icon="/assets/similar.svg", prompt=False),
+        )
+
+    def _query_label_id(self, ctx):
+        """The patch (label) id to query by: a selected label wins; else the highest-confidence box of a
+        selected sample. Returns None with a reason for a friendly message."""
+        for sl in (getattr(ctx, "selected_labels", None) or []):  # user selected a specific box in the expanded view
+            lid = sl.get("label_id") or sl.get("id")
+            if lid:
+                return lid, None
+        if ctx.selected:  # a sample is selected in the grid -> use its most-confident detection
+            try:
+                s = ctx.dataset[ctx.selected[0]]
+                dets = s["yolo_detections"].detections if s["yolo_detections"] else []
+            except Exception:  # noqa: BLE001
+                dets = []
+            if dets:
+                return max(dets, key=lambda d: d.confidence or 0.0).id, None
+            return None, "選取的影像沒有偵測框"
+        return None, "請先在格狀檢視選一張有框的影像(或在展開圖選一個 label)"
+
+    def execute(self, ctx):
+        ds = ctx.dataset
+        k = int(ctx.params.get("k") or 50)
+        try:
+            has_index = "vix_patch_sim" in ds.list_brain_runs()
+        except Exception:  # noqa: BLE001
+            has_index = False
+        if not has_index:
+            return {"error": "尚未建立索引 — 請先點工具列的『VIX: 建立相似搜尋索引』。"}
+        qid, why = self._query_label_id(ctx)
+        if not qid:
+            return {"error": why}
+        try:
+            view = ds.to_patches("yolo_detections").sort_by_similarity(qid, k=k, brain_key="vix_patch_sim")
+            ctx.ops.set_view(view=view)  # drive the App to the DINO-sorted object patches (no Enterprise)
+        except Exception as exc:  # noqa: BLE001 - stale id / index mismatch -> friendly message
+            return {"error": f"找相似失敗:{exc}"}
+        return {"shown": len(view),
+                "hint": "已切到『用你的 DINO 排序的相似物件』檢視(最像的在前)。要還原:清掉檢視列的階段。"}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        r = ctx.results or {}
+        if r.get("error"):
+            out.str("error", label="錯誤")
+            return types.Property(out)
+        out.int("shown", label="顯示相似物件數")
+        out.str("hint", label="說明")
         return types.Property(out)
 
 
@@ -679,6 +745,7 @@ def register(p):
     p.register(LoadDataset)
     p.register(DeleteDataset)
     p.register(BuildSimilarity)
+    p.register(FindSimilar)
     p.register(ConfirmGolden)
     p.register(DismissFalseAlarm)
     p.register(ExplainSample)

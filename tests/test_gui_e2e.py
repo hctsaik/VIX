@@ -166,6 +166,33 @@ def test_gui_build_similarity_patch_index(live):
     assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)  # index build writes no review decision
 
 
+def test_gui_find_similar_uses_dino_index(live):
+    """Find-similar (OSS, no Enterprise replacement): with the patch index built, selecting a sample and
+    running find_similar drives the App (set_view) to a patches view sorted by that object's DINO
+    similarity. Read-only; writes no review; never touches a zoo model / Enterprise."""
+    live.ad.build_patch_similarity()
+    live.ds.reload()
+    op = PLUGIN.FindSimilar()
+    ctx = _ctx(live.ds, selected=[live.ds.first().id])
+    out = op.execute(ctx)
+    assert not out.get("error"), out
+    assert out.get("shown", 0) >= 1
+    setviews = [c for c in ctx.ops.calls if c[0] == "set_view"]
+    assert len(setviews) == 1
+    view = setviews[0][2].get("view")
+    assert any("Similarity" in st.__class__.__name__ for st in view._stages)  # sorted by similarity
+    assert not _reviews(live.cfg) and _chain_ok(live.cfg)
+
+
+def test_gui_find_similar_needs_index_and_selection(live):
+    """Find-similar fails friendly (no crash) when there's no index, or nothing selected."""
+    op = PLUGIN.FindSimilar()
+    assert "建立相似搜尋索引" in (op.execute(_ctx(live.ds, selected=[live.ds.first().id])).get("error") or "")
+    live.ad.build_patch_similarity(); live.ds.reload()
+    assert (op.execute(_ctx(live.ds, selected=[])).get("error") or "")  # no selection -> friendly error
+    assert _chain_ok(live.cfg)
+
+
 def test_adapter_patch_similarity_and_has_embeddings(live):
     """Adapter seam: build_patch_similarity returns the patch brain key; has_embeddings detects the
     per-detection DINO vectors (so the operator can skip the expensive recompute)."""

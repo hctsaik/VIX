@@ -7,6 +7,7 @@ operators:
   - load_dataset
   - delete_dataset
   - build_similarity
+  - find_similar
   - confirm_golden
   - dismiss_false_alarm
   - explain_sample

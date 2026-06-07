@@ -26,7 +26,7 @@
 <h1>找相似的物件 (DINO)</h1>
 <p class="sub">選一個框 → 放大鏡 → 全資料集按物件相似度重排。離線、免 FiftyOne Enterprise。</p>
 
-<div class="note"><span class="tag b">Tier B</span> 在 App 裡點 <b>Similarity Search</b> 看到「<b>Upgrade to FiftyOne Enterprise</b>」?那個<b>面板</b>是付費功能 —— 但「按相似度搜尋」這個<b>能力</b>在開源版就有,而且 VIX 用你已經算好的 <b>DINOv2 物件嵌入</b>讓它變成<b>物件級</b>的(找長得像的<b>瑕疵</b>,不是只找像的整張背景)。離線、不需 Enterprise、不需外部向量資料庫。</div>
+<div class="note"><span class="tag b">Tier B</span> 在 App 裡點 <b>Similarity Search</b> 看到「<b>Upgrade to FiftyOne Enterprise</b>」?那個<b>內建面板</b>是付費功能、而且不吃你的 DINO。<b>不要用它。</b> 改用 VIX 自己的 <b>🔎 找相似物件</b> 按鈕 —— 它用你已算好的 <b>DINOv2 物件嵌入</b>,做<b>物件級</b>相似(找長得像的<b>瑕疵</b>,不是只找像的整張背景),完全離線、不需 Enterprise、不需外部向量資料庫。</div>
 
 <h2 class="sec">關鍵:比的是「框裡的物件」,不是「整張圖」</h2>
 <p>相似度準不準,取決於你<b>拿什麼去比</b>:</p>
@@ -44,13 +44,14 @@
 <pre><code>vix similarity      # 對每個框算 DINOv2 嵌入(若還沒) + 建立物件框相似索引</code></pre>
 <figure><img src="img/sim_build.jpg" alt="建立相似搜尋索引按鈕與完成訊息"><figcaption>工具列的「建立相似搜尋索引」按鈕;完成後 App 會提示用放大鏡排相似。</figcaption></figure>
 
-<h2 class="sec">② 用:選一個框 → 放大鏡 → 全資料集按相似排</h2>
+<h2 class="sec">② 用:選一張圖 → 「找相似物件」按鈕</h2>
+<div class="warn"><b>不要用內建的「Similarity Search」面板</b>(<kbd>+</kbd> 開的那個)—— 那是 <b>FiftyOne Enterprise 付費</b>功能,會叫你升級,且不吃你的 DINO。請改用 VIX 自己的按鈕,它走你剛建立的 DINO 索引、完全離線。</div>
 <ol class="steps">
-<li>到 <b>Samples</b> 分頁,<b>勾選一個框</b>(在格狀檢視選一張並選取它的 label,或在展開的單張圖裡點一個 label)。</li>
-<li>點工具列的 <b>放大鏡(Sort by similarity)</b>。</li>
-<li>整個資料集會<b>按該物件的相似度重新排序</b> —— 最像的排最前面。很適合:同一種瑕疵一次撈齊、找你可能漏標的同類、找重複。</li>
+<li>到 <b>Samples</b> 分頁,<b>選一張有框的影像</b>(格狀檢視點該圖左上角的勾選圈;或在展開的單張圖裡選一個 label,就會用那一個框當查詢)。</li>
+<li>點工具列的 <b>🔎 VIX: 找相似物件</b> 按鈕。</li>
+<li>App 立刻切到「<b>該物件的相似排序</b>」檢視(檢視列會出現 <code>ToPatches</code> + <code>SortBySimilarity</code>,最像的排最前面)。很適合:同一種瑕疵一次撈齊、找你可能漏標的同類、找重複。要還原就清掉檢視列的階段。</li>
 </ol>
-<figure><img src="img/sim_sorted.jpg" alt="按物件相似度排序後的結果"><figcaption>選一個 pothole 框、按放大鏡後,資料集依「這個坑洞長得多像」重排 —— 全離線、用 VIX 的 DINOv2 物件嵌入,免 Enterprise。</figcaption></figure>
+<figure><img src="img/sim_sorted.jpg" alt="按 VIX 找相似物件後的結果"><figcaption>選一張圖、按「找相似物件」後,App 依「這個坑洞長得多像」重排成物件 patches —— 檢視列顯示 <code>SortBySimilarity … vix_patch_sim</code>,全離線、用 VIX 的 DINOv2 物件嵌入,<b>沒有任何 Enterprise 升級提示</b>。</figcaption></figure>
 
 <h2 class="sec">誠實邊界</h2>
 <div class="warn"><b>需要嵌入:</b>這是 <span class="tag b">Tier B</span> 功能,要算 DINOv2 物件嵌入(第一次會下載一次權重)。Tier-A 的 <code>vix diagnose</code> 不算嵌入,所以用這個前要先建索引。<br><br>
