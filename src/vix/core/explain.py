@@ -24,26 +24,28 @@ def explain_image(
     """Per-image drill-down (U9): each axis's value vs threshold + sensitivity
     ("how much would need to change to flip the decision")."""
     axes: list[dict] = []
-    if conf_thr is not None:
-        fail = confidence < conf_thr
-        axes.append({
-            "axis": "confidence",
-            "value": confidence,
-            "threshold": conf_thr,
-            "fail": fail,
-            "sensitivity": (f"信心再 +{conf_thr - confidence:.2f} 即通過"
-                            if fail else f"高於門檻 {confidence - conf_thr:.2f}"),
-        })
-    if dist_thr is not None:
-        fail = knn_dist > dist_thr
-        axes.append({
-            "axis": "knn_dist",
-            "value": knn_dist,
-            "threshold": dist_thr,
-            "fail": fail,
-            "sensitivity": (f"距離再 -{knn_dist - dist_thr:.3f} 即通過"
-                            if fail else f"低於門檻 {dist_thr - knn_dist:.3f}"),
-        })
+    # always surface the raw value (a newcomer should see confidence/distance even before calibrate);
+    # mark fail only when a threshold exists, and say "門檻待校準" when it doesn't.
+    c_fail = conf_thr is not None and confidence < conf_thr
+    axes.append({
+        "axis": "confidence",
+        "value": confidence,
+        "threshold": conf_thr,
+        "fail": c_fail,
+        "sensitivity": (f"信心再 +{conf_thr - confidence:.2f} 即通過" if c_fail
+                        else f"高於門檻 {confidence - conf_thr:.2f}" if conf_thr is not None
+                        else "門檻待校準(vix calibrate 後可比)"),
+    })
+    d_fail = dist_thr is not None and knn_dist > dist_thr
+    axes.append({
+        "axis": "knn_dist",
+        "value": knn_dist,
+        "threshold": dist_thr,
+        "fail": d_fail,
+        "sensitivity": (f"距離再 -{knn_dist - dist_thr:.3f} 即通過" if d_fail
+                        else f"低於門檻 {dist_thr - knn_dist:.3f}" if dist_thr is not None
+                        else "門檻待校準(vix calibrate 後可比)"),
+    })
     axes.append({"axis": "label_consistency", "value": label_issue, "fail": bool(label_issue)})
     failing = [a["axis"] for a in axes if a.get("fail")]
     calibrated = conf_thr is not None or dist_thr is not None

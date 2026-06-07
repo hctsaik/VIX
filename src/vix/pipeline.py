@@ -458,11 +458,12 @@ def _image_items(adapter, want_tags=None, exclude_tags=None) -> list[EmbItem]:
     return items
 
 
-def audit_labels(adapter, cfg, k=None):  # S2
+def audit_labels(adapter, cfg, k=None, log_event=True):  # S2
     issues = suspected_label_errors(_detection_items(adapter, want_tags=[Tag.GOLDEN]), k or cfg.knn_k)
-    DecisionLog(cfg.decision_log_path).append(
-        "audit_labels", decision=str(len(issues)), extra={"top": [i.id for i in issues[:20]]}
-    )
+    if log_event:  # read-only callers (e.g. review_queue rendering) pass log_event=False — the append-only
+        DecisionLog(cfg.decision_log_path).append(  # ledger records DECISIONS, not every panel refresh
+            "audit_labels", decision=str(len(issues)), extra={"top": [i.id for i in issues[:20]]}
+        )
     log.info("audit_labels: %d suspected label errors", len(issues))
     return issues
 
@@ -672,7 +673,8 @@ def review_queue(adapter, cfg, top=50, coverage_out=None):  # T3 + T7
         return []
     if coverage_out is not None:  # golden exists -> surface any calibration-coverage mismatch too
         coverage_out["coverage"] = _coverage_verdict(adapter, cfg)
-    label_issue_ids = {i.id.split(":")[0] for i in audit_labels(adapter, cfg)}  # AJ2/AJ6: activate label-error risk
+    label_issue_ids = {i.id.split(":")[0]  # AJ2/AJ6: label-error risk; log_event=False — queue render is read-only
+                       for i in audit_labels(adapter, cfg, log_event=False)}
     ranked = _review_queue(cands, ref, k=cfg.knn_k, label_issue_ids=label_issue_ids)[:top]
     log.info("review_queue: %d candidates ranked, returning top %d", len(cands), len(ranked))
     return [
@@ -1118,7 +1120,8 @@ def batch_trend(cfg):
 def explain_one(adapter, cfg, vix_hash):  # U9
     policy = ThresholdPolicy.load(cfg.thresholds_path) if cfg.thresholds_path.exists() else None
     scorer = OutlierScorer(_emb_by_class(adapter, {Tag.GOLDEN}), k=cfg.knn_k)
-    label_issue_imgs = {i.id.split(":")[0] for i in audit_labels(adapter, cfg)}
+    label_issue_imgs = {i.id.split(":")[0]  # explain is a read-only drill-down -> don't log an audit event
+                        for i in audit_labels(adapter, cfg, log_event=False)}
     for h, _s, dets, _t in adapter.samples():
         if h != vix_hash:
             continue
@@ -2207,9 +2210,17 @@ def resolve_review(adapter, cfg, vix_hash, decision, label=None, reviewer_id="re
                 with open(cfg.workspace / "relabel_changes.jsonl", "a", encoding="utf-8") as f:
                     for c in changes:
                         f.write(json.dumps(c) + "\n")
+        try:  # clean terminal-state transition: a previously-dismissed sample becomes trainable again
+            adapter.remove_tags(vix_hash, [Tag.REJECTED])  # else GOLDEN∧REJECTED → silently dropped by export
+        except NotImplementedError:  # adapter without tag-removal; a real removal error must NOT be masked
+            pass
         adapter.apply_tags(vix_hash, [Tag.GOLDEN])
         outcome = label or "confirmed"
     elif decision == "false_alarm":
+        try:  # clean transition: dismissing un-goldens a previously-confirmed sample (no contradictory state)
+            adapter.remove_tags(vix_hash, [Tag.GOLDEN])
+        except NotImplementedError:
+            pass
         adapter.apply_tags(vix_hash, [Tag.REJECTED])
         outcome = "false_alarm"
     else:

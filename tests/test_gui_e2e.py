@@ -56,7 +56,7 @@ def _ctx(ds, selected=None, params=None, user_id="tester"):
     panel = SimpleNamespace(state=SimpleNamespace(md=None, err=None, rows=[]),
                             data=SimpleNamespace(rows=[]))
     return SimpleNamespace(dataset=ds, selected=list(selected or []), params=params or {},
-                           user_id=user_id, ops=_Ops(), panel=panel)
+                           user_id=user_id, ops=_Ops(), panel=panel, results=None, selected_labels=[])
 
 
 def _log(cfg):
@@ -345,6 +345,20 @@ def test_s3_queue_uncalibrated_is_graceful(bare):
         assert "確認" in ctx.panel.state.err or "golden" in ctx.panel.state.err
     assert isinstance(ctx.panel.data.rows, list)
     assert not _reviews(bare.cfg) and _chain_ok(bare.cfg)
+
+
+def test_resolve_review_clears_opposing_tag(live):
+    """Re-confirm after dismiss (and vice-versa) must clear the opposing terminal tag, so a sample never
+    holds GOLDEN∧REJECTED — that contradictory state is silently dropped by export."""
+    h = next((hh for hh, _s, _d, t in live.ad.samples() if "golden" not in t and "rejected" not in t), None)
+    assert h, "need a not-yet-resolved sample"
+    pipeline.resolve_review(live.ad, live.cfg, h, "false_alarm")
+    live.ds.reload()
+    assert "rejected" in live.ds.match({"vix_hash": h}).first().tags
+    pipeline.resolve_review(live.ad, live.cfg, h, "confirm")           # change of mind
+    live.ds.reload()
+    tags = live.ds.match({"vix_hash": h}).first().tags
+    assert "golden" in tags and "rejected" not in tags                 # clean transition, no contradiction
 
 
 def test_confirm_golden_relabel_preserves_embeddings(live):

@@ -4,6 +4,7 @@ description: "VIX review workstation: confirm/relabel/dismiss + explain drill-do
 fiftyone:
   version: ">=0.23"
 operators:
+  - open_review_workstation
   - load_dataset
   - delete_dataset
   - build_similarity

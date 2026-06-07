@@ -17,6 +17,7 @@ system — never by `import vix` or the test suite.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import fiftyone.operators as foo
@@ -54,6 +55,51 @@ def _sample_id_for_hash(ctx, h):
         return None
 
 
+class OpenReviewWorkstation(foo.Operator):
+    """Discoverability: one toolbar button that opens the VIX review panels (覆核佇列 + 弱點報告) beside
+    the grid — so a first-time user doesn't have to hunt through FiftyOne's '+' new-panel menu to find
+    the risk-ranked queue that drives the whole review loop."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="open_review_workstation", label="VIX: 開啟覆核工作台(佇列+報告)",
+                                  dynamic=True)
+
+    def resolve_placement(self, ctx):
+        return types.Placement(
+            types.Places.SAMPLES_GRID_ACTIONS,
+            types.Button(label="VIX: 開啟覆核工作台", icon="/assets/queue.svg", prompt=False),
+        )
+
+    def execute(self, ctx):
+        opened = False
+        try:  # open both panels via the spaces API (the '+' menu is the only other way to find them)
+            import fiftyone as fo
+            ctx.ops.set_spaces(spaces=fo.Space(children=[
+                fo.Panel(type="Samples", pinned=True),
+                fo.Panel(type="vix_queue"),
+                fo.Panel(type="vix_report"),
+            ]))
+            opened = True
+        except Exception:  # noqa: BLE001 - fall back to open_panel if set_spaces is unavailable
+            for p in ("vix_queue", "vix_report"):
+                try:
+                    ctx.ops.open_panel(p); opened = True
+                except Exception:  # noqa: BLE001
+                    pass
+        if not opened:  # don't claim success with nothing opened
+            return {"error": "無法開啟面板;請用分頁列的 + 手動加入『VIX: 覆核佇列』/『VIX: 弱點報告』。"}
+        return {"hint": "已開啟『VIX: 覆核佇列』與『VIX: 弱點/一致性報告』面板。"}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        if (ctx.results or {}).get("error"):
+            out.str("error", label="錯誤")
+            return types.Property(out)
+        out.str("hint", label="提示")
+        return types.Property(out)
+
+
 class ConfirmGolden(foo.Operator):
     @property
     def config(self):
@@ -67,20 +113,42 @@ class ConfirmGolden(foo.Operator):
         )
 
     def resolve_input(self, ctx):
+        n = len(_selected_hashes(ctx))
         inputs = types.Object()
+        inputs.view("warn", types.Notice(  # guardrail: golden becomes the trust anchor others rank against
+            label=f"將把選取的 {n} 張設為 golden(比對基準)。golden 會成為其他圖的覆核排序依據,"
+                  "請先確認這幾張的標註是正確的。"))
         inputs.str("label", label="(選填)更正類別,留空則沿用原標籤", required=False)
         return types.Property(inputs, view=types.View(label="確認選取影像為 golden"))
 
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
-        label = ctx.params.get("label") or None
+        label = (ctx.params.get("label") or "").strip() or None  # ignore blank/whitespace-only relabel
+        import unicodedata
+        if label and (len(label) > 100 or any(unicodedata.category(c).startswith("C") for c in label)):
+            return {"error": "更正類別名稱不合法(過長或含控制/不可見字元)"}  # bound garbage relabel input
         hashes = _selected_hashes(ctx)
+        n_sel = len(ctx.selected or [])
         if not hashes:  # parity with explain_sample: a friendly message, never a phantom 0-write
             return {"error": "請先在格狀檢視選取影像"}
-        for h in hashes:
-            pipeline.resolve_review(ad, cfg, h, "confirm", label, reviewer_id=ctx.user_id or "reviewer")
+        ok, failed, first_err = 0, 0, None
+        for h in hashes:  # aggregate per-item outcomes so one bad hash can't abort the batch silently
+            try:
+                pipeline.resolve_review(ad, cfg, h, "confirm", label, reviewer_id=ctx.user_id or "reviewer")
+                ok += 1
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                if first_err is None:
+                    first_err = f"{h[:8]}…({exc})"
         ctx.ops.reload_dataset()
-        return {"confirmed": len(hashes)}
+        skipped = max(0, n_sel - len(hashes))  # selected but had no vix_hash
+        msg = (f"已確認 {ok} 張為 golden" + (f";略過 {skipped} 張(無 vix_hash)" if skipped else "")
+               + (f";失敗 {failed} 張(首例 {first_err})" if failed else ""))
+        try:
+            ctx.ops.notify(msg, variant=("success" if not failed else "warning"))
+        except Exception:  # noqa: BLE001
+            pass
+        return {"confirmed": ok, "skipped": skipped, "failed": failed}
 
 
 class DismissFalseAlarm(foo.Operator):
@@ -105,10 +173,57 @@ class DismissFalseAlarm(foo.Operator):
         hashes = _selected_hashes(ctx)
         if not hashes:
             return {"error": "請先在格狀檢視選取影像"}
+        n_sel = len(ctx.selected or [])
+        ok, failed, first_err = 0, 0, None
         for h in hashes:
-            pipeline.resolve_review(ad, cfg, h, "false_alarm", reviewer_id=ctx.user_id or "reviewer")
+            try:
+                pipeline.resolve_review(ad, cfg, h, "false_alarm", reviewer_id=ctx.user_id or "reviewer")
+                ok += 1
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                if first_err is None:
+                    first_err = f"{h[:8]}…({exc})"
         ctx.ops.reload_dataset()
-        return {"dismissed": len(hashes)}
+        skipped = max(0, n_sel - len(hashes))
+        msg = (f"已標記 {ok} 張為誤報並排除" + (f";略過 {skipped} 張(無 vix_hash)" if skipped else "")
+               + (f";失敗 {failed} 張(首例 {first_err})" if failed else "") + "。誤按了?重新選取後按『確認正確樣本』即可復原。")
+        try:  # recoverability affordance: tell the user how to undo a mis-click
+            ctx.ops.notify(msg, variant=("success" if not failed else "warning"))
+        except Exception:  # noqa: BLE001
+            pass
+        return {"dismissed": ok, "skipped": skipped, "failed": failed}
+
+
+_EXPLAIN_AXIS = {"confidence": "模型信心", "knn_dist": "與已知樣本的距離", "label_consistency": "標籤一致性"}
+
+
+def _explain_md(ex: dict) -> str:
+    """Render the explain_one dict as readable markdown (a newcomer shouldn't have to read a raw obj)."""
+    if not ex:
+        return "(無資料)"
+    L = [f"#### {ex.get('summary', '')}"]
+    for a in ex.get("axes", []):
+        ax = a.get("axis")
+        name = _EXPLAIN_AXIS.get(ax, ax)
+        mark = "🔴" if a.get("fail") else "🟢"
+        if ax == "label_consistency":  # boolean axis — describe, don't print a number
+            L.append(f"- {mark} **{name}**:" + ("鄰近樣本多為其他類,疑似標錯" if a.get("fail") else "與鄰近樣本一致"))
+            continue
+        val, thr = a.get("value"), a.get("threshold")
+        line = f"- {mark} **{name}**"
+        if isinstance(val, (int, float)) and math.isfinite(val):  # show value even when uncalibrated
+            line += f":值 {val:.3f}"
+            if isinstance(thr, (int, float)) and math.isfinite(thr):
+                line += f" / 門檻 {thr:.3f}" + (f" — {a['sensitivity']}" if a.get("sensitivity") else "")
+            else:
+                line += " / 門檻待校準(vix calibrate 後可比)"
+        elif isinstance(val, (int, float)):  # inf distance == no golden reference to measure against yet
+            line += ":需先建立 golden 參照樣本才能計算距離"
+        L.append(line)
+    if not ex.get("calibrated"):
+        L.append("\n_尚未 calibrate:門檻未知,無法算敏感度;請先建立 golden 並 vix calibrate。_")
+    L.append("\n_說明:「信心」是模型自評、非正確率;以上為 proxy 疑慮訊號,供你判斷,非「一定錯」的判決。_")
+    return "\n".join(L)
 
 
 class ExplainSample(foo.Operator):
@@ -121,11 +236,20 @@ class ExplainSample(foo.Operator):
         hashes = _selected_hashes(ctx)
         if not hashes:
             return {"error": "請先在格狀檢視選取一張影像"}
-        return {"explanation": pipeline.explain_one(ad, cfg, hashes[0])}
+        ex = pipeline.explain_one(ad, cfg, hashes[0])
+        md = _explain_md(ex)
+        if len(hashes) > 1:  # be explicit that a multi-select only explains the first
+            md = f"_(選取了 {len(hashes)} 張,以下僅解釋第一張)_\n\n" + md
+        return {"summary_md": md, "explanation": ex}
 
     def resolve_output(self, ctx):
         outputs = types.Object()
-        outputs.obj("explanation", label="VIX 下鑽解釋")
+        r = ctx.results or {}
+        if r.get("error"):
+            outputs.str("error", label="錯誤")
+            return types.Property(outputs)
+        outputs.str("summary_md", label="為何被攔", view=types.MarkdownView())  # readable prose, not a raw dict
+        outputs.obj("explanation", label="原始細節(進階)")
         return types.Property(outputs)
 
 
@@ -247,7 +371,19 @@ def _queue_rows(ctx, top=50):
         return [], str(exc)
     if not q and cov.get("reason"):  # disabled (no golden / mismatched calibration) -> loud, honest banner
         return [], cov["reason"]
-    return [{"id": r["id"], "risk": round(r.get("risk", 0.0), 3), "why": (r.get("why") or "")[:90]} for r in q], None
+    names: dict = {}  # vix_hash -> filename, so a row shows a recognisable image, not just the 64-char hash
+    try:
+        import os
+        for h2, fp, *_ in ad.samples():
+            names[h2] = os.path.basename(fp)
+    except Exception:  # noqa: BLE001 - filename is display sugar; fall back to a short hash
+        pass
+
+    def _why(r):
+        w = r.get("why") or ""
+        return w if len(w) <= 90 else w[:89] + "…"  # ellipsis, don't clip mid-reason without a marker
+    return [{"id": r["id"], "file": names.get(r["id"], r["id"][:10] + "…"),
+             "risk": round(r.get("risk", 0.0), 3), "why": _why(r)} for r in q], None
 
 
 class VixQueuePanel(foo.Panel):
@@ -281,6 +417,11 @@ class VixQueuePanel(foo.Panel):
         sid = _sample_id_for_hash(ctx, h) if h else None
         if sid:
             ctx.ops.open_sample(id=sid)  # pop the image in the App's sample modal (works from any tab)
+        else:  # stale/vanished row -> tell the user instead of silently doing nothing
+            try:
+                ctx.ops.notify("找不到該圖(可能已被刪除或變更);請按「重新整理佇列」。", variant="warning")
+            except Exception:  # noqa: BLE001
+                pass
 
     def _resolve(self, ctx, decision):
         h = self._row_hash(ctx)
@@ -292,7 +433,16 @@ class VixQueuePanel(foo.Panel):
         except Exception as exc:  # noqa: BLE001
             ctx.panel.state.err = f"此列無法處理({exc});請按「重新整理佇列」"
             return
-        self.on_load(ctx)  # resolved item drops out of the queue (review_queue excludes golden/rejected)
+        # drop the resolved row locally instead of recomputing the whole queue (O(N·golden)) on every
+        # click — the item is excluded from review_queue anyway; the user can 🔄 for a full re-rank.
+        rows = [r for r in (ctx.panel.state.rows or []) if r.get("id") != h]
+        ctx.panel.state.rows = rows
+        ctx.panel.data.rows = rows
+        try:  # success feedback + undo hint (parity with the toolbar dismiss button)
+            ctx.ops.notify("已確認為 golden。" if decision == "confirm"
+                           else "已標記誤報並排除(重新確認即可復原)。", variant="success")
+        except Exception:  # noqa: BLE001
+            pass
         ctx.ops.reload_dataset()
 
     def on_confirm(self, ctx):
@@ -308,8 +458,16 @@ class VixQueuePanel(foo.Panel):
             panel.md(f"### ⚠ 覆核佇列尚未就緒\n\n{ctx.panel.state.err}", name="qerr")
             panel.btn("refresh", label="重新整理佇列", icon="refresh", variant="contained", on_click=self.on_refresh)
             return types.Property(panel, view=types.GridView(height=100, width=100))
+        if not (ctx.panel.state.rows or []):  # empty != broken: say "all clear" instead of a blank table
+            panel.md("### ✅ 佇列已清空\n\n目前沒有待覆核的項目(都已確認 / 排除,或這批尚未路由)。", name="qdone")
+            panel.btn("refresh", label="重新整理佇列", icon="refresh", variant="contained", on_click=self.on_refresh)
+            return types.Property(panel, view=types.GridView(height=100, width=100))
+        # honest framing of the score (judges flagged "風險" reading as a verdict)
+        panel.md("_「風險」是排序用的綜合疑慮分數(信心低 + 與 golden 差異大 + 疑似標錯),用來決定**先看哪些**,"
+                 "不是「一定錯」的機率。_", name="qcap")
         table = types.TableView()
         table.add_column("risk", label="風險")
+        table.add_column("file", label="影像")
         table.add_column("id", label="vix_hash")
         table.add_column("why", label="原因(proxy)")
         table.add_row_action("inspect", self.on_inspect, label="看圖", icon="visibility")
@@ -834,6 +992,7 @@ class DeleteDataset(foo.Operator):
 
 
 def register(p):
+    p.register(OpenReviewWorkstation)
     p.register(LoadDataset)
     p.register(DeleteDataset)
     p.register(BuildSimilarity)
