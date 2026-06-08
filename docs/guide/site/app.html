@@ -49,6 +49,7 @@ vix app                               # 開 FiftyOne + @vix/review 外掛</code>
 <figure><img src="../walkthrough/07_flagged-sample-bad-box.png" alt="被標記的壞框"></figure></li>
 <li>用 <code>flag_loose_boxes</code>(SAM)找出太鬆的框。
 <figure><img src="../walkthrough/09_flag-loose-boxes-operator-sam.png" alt="SAM 框鬆稽核"></figure></li>
+<li>用 <code>flag_image_quality</code> 標出<b>像素層級</b>的品質問題(模糊 / 過曝過暗 / 長寬比離群),形成 <code>vixq:blurry</code> / <code>vixq:exposed</code> / <code>vixq:aspect</code> 工作清單 —— FiftyOne Enterprise「Data Quality」面板的離線替代,<b>免 golden</b>(看的是像素,不是標籤)。CLI 等價:<code>vix image-quality --tag</code>。一律 advisory:不刪檔、不改標,人工覆核後自行處理。</li>
 </ol>
 <div class="ref">完整 10 步走查(含可點的覆核佇列):見 <a href="../GUI_WALKTHROUGH.html">GUI_WALKTHROUGH.html</a>。</div>
 
