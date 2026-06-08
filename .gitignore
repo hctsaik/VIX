@@ -37,3 +37,6 @@ yolov8n.pt
 docs/guide/site/_artifacts/
 docs/guide/site/img/_verify_*.png
 docs/guide/site/img/_probe_*.png
+
+# run-vix skill driver scratch (screenshots etc.)
+/_artifacts/
