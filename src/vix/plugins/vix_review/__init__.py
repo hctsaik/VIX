@@ -391,6 +391,117 @@ class VixReportPanel(foo.Panel):
         return types.Property(panel, view=types.GridView(height=100, width=100))
 
 
+def _load_eval():
+    """The eval_results.json (vix eval-ingest output) or None — confusion + per_class + confusion_hashes."""
+    import json
+    p = Config().eval_results_path
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - malformed eval json must not crash the panel
+        return None
+
+
+class VixEvalPanel(foo.Panel):
+    """Interactive Model-Evaluation panel — the OSS replacement for FiftyOne Enterprise's Model Evaluation
+    panel. Pure presentation over the tested eval_ingest output (eval_results.json): a CLICKABLE confusion
+    matrix (click a truth→pred cell → the grid jumps to exactly those misclassified images) + a per-class
+    precision/recall/F1 table. Zero new logic; AP/P/R/F1 are MEASURED (not PROXY), but only as good as your
+    eval labels (imported, unreviewed references are flagged). No coverage-% / sliders by design."""
+
+    @property
+    def config(self):
+        return foo.PanelConfig(name="vix_eval", label="VIX: 模型評估(可點混淆矩陣)", surfaces="grid")
+
+    def on_load(self, ctx):
+        ev = _load_eval()
+        if not ev:
+            ctx.panel.state.ready = False
+            ctx.panel.state.md = ("# VIX 模型評估\n\n尚無評估結果。請先用你的 val 標註跑:\n\n"
+                                  "`vix eval-ingest <val.jsonl>`(或 `vix diagnose ... --weights model.pt`)\n\n"
+                                  "完成後回來重開此面板,即可點混淆矩陣的格子跳到誤分類的影像。")
+            return
+        from vix.core.eval_ingest import precision_recall_f1
+        n_gt, conf = ev.get("n_gt", {}), ev.get("confusion", {})
+        per_class = ev.get("per_class", {})
+        classes = sorted(set(n_gt) | set(per_class) | {k.split("->")[0] for k in conf} | {k.split("->")[-1] for k in conf})
+        tp = {c: per_class.get(c, {}).get("tp", 0) for c in classes}
+        z = [[(tp[t] if t == p else conf.get(f"{t}->{p}", 0)) for p in classes] for t in classes]
+        prf = precision_recall_f1(per_class)
+        rows = [{"cls": c, "precision": f"{prf.get(c, {}).get('precision', 0):.2f}",
+                 "recall": f"{prf.get(c, {}).get('recall', 0):.2f}", "f1": f"{prf.get(c, {}).get('f1', 0):.2f}",
+                 "ap": f"{ev.get('per_class_ap', {}).get(c, 0):.2f}",
+                 "support": n_gt.get(c, 0)} for c in classes]
+        rows.sort(key=lambda r: float(r["f1"]))   # weakest class first
+        ctx.panel.state.ready = True
+        ctx.panel.state.classes = classes
+        ctx.panel.state.z = z
+        ctx.panel.state.confusion_hashes = ev.get("confusion_hashes", {})
+        ctx.panel.state.prf = rows
+        ctx.panel.data.prf = rows
+        ctx.panel.state.md = (f"# VIX 模型評估\n\nmAP **{ev.get('mAP', 0):.3f}**(@IoU {ev.get('iou_thr', 0.5)})。"
+                              "點下方混淆矩陣的格子 → 格狀檢視跳到那批「真實→預測」誤分類的影像。\n\n"
+                              "_(P/R/F1/AP 為**實測**,非 PROXY;但只與你的 eval 標註一樣準 —— 匯入未覆核的標註時,"
+                              "「誤分類」可能是你的標籤漏框。對角線為正確偵測 TP;**非對角線只含「被誤判成他類」**,"
+                              "漏框/定位誤差不在矩陣裡,請看 P/R/F1 的 FN 與弱點報告。)_")
+
+    def on_cell(self, ctx):
+        """Click a confusion cell -> drive the grid to those misclassified images. x=pred, y=truth."""
+        x, y = ctx.params.get("x"), ctx.params.get("y")   # pred class, truth class
+        if not x or not y:
+            return
+        if x == y:
+            self._notify(ctx, "對角線是正確偵測(TP),沒有可看的誤分類影像。", "info")
+            return
+        hashes = (ctx.panel.state.confusion_hashes or {}).get(f"{y}->{x}", [])
+        if not hashes:
+            self._notify(ctx, f"此格({y}→{x})沒有誤分類樣本。", "info")
+            return
+        try:
+            view = ctx.dataset.match({"vix_hash": {"$in": list(hashes)}})
+            n = view.count()                          # report the REALIZED count, not the stored one
+            ctx.ops.set_view(view=view)
+            if n:
+                self._notify(ctx, f"已跳到 {n} 張「{y} 被誤判為 {x}」的影像。清檢視列可還原。", "success")
+            else:  # eval_results.json predates a sample delete/rename -> honest, don't overstate
+                self._notify(ctx, f"此格的影像已不在資料集中(eval 結果可能過期);請重跑 vix eval-ingest。", "warning")
+        except Exception as exc:  # noqa: BLE001
+            self._notify(ctx, f"跳轉失敗:{exc}", "error")
+
+    @staticmethod
+    def _notify(ctx, msg, variant):
+        try:
+            ctx.ops.notify(msg, variant=variant)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def on_refresh(self, ctx):
+        self.on_load(ctx)
+
+    def render(self, ctx):
+        panel = types.Object()
+        panel.md(ctx.panel.state.md or "_載入中…_", name="eval_md")
+        if ctx.panel.state.ready:
+            classes = ctx.panel.state.classes or []
+            heat = [{"type": "heatmap", "x": classes, "y": classes, "z": ctx.panel.state.z or [],
+                     "colorscale": "Blues", "showscale": True,
+                     "hovertemplate": "真實=%{y} → 預測=%{x}:%{z}<extra></extra>"}]
+            panel.plot("cm", data=heat, on_click=self.on_cell,
+                       layout={"title": "混淆矩陣(點格子跳到那批誤分類影像)",
+                               "xaxis": {"title": "預測 pred"},
+                               "yaxis": {"title": "真實 truth", "autorange": "reversed"}})
+            prf = ctx.panel.state.prf or []
+            if prf:
+                t = types.TableView()
+                for col, lab in (("cls", "類別"), ("precision", "Precision"), ("recall", "Recall"),
+                                 ("f1", "F1"), ("ap", "AP"), ("support", "GT 數")):
+                    t.add_column(col, label=lab)
+                panel.list("prf", types.Object(), view=t, label="各類別 P/R/F1(弱者在前)")
+        panel.btn("refresh", label="重新整理(讀 eval-ingest 結果)", on_click=self.on_refresh)
+        return types.Property(panel, view=types.GridView(height=100, width=100))
+
+
 def _queue_rows(ctx, top=50):
     """The risk-ranked review queue as table rows. Pure render of pipeline.review_queue (tested core):
     no ranking/decision logic lives here. Returns (rows, error_str). When the queue is disabled because
@@ -1133,4 +1244,5 @@ def register(p):
     p.register(FlagLooseBoxes)
     p.register(FlagImageQuality)
     p.register(VixReportPanel)
+    p.register(VixEvalPanel)
     p.register(VixQueuePanel)

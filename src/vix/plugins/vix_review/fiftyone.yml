@@ -20,4 +20,5 @@ operators:
   - flag_image_quality
 panels:
   - vix_report
+  - vix_eval
   - vix_queue

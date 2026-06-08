@@ -316,6 +316,16 @@ def test_b3_report_panel_opens_in_browser(app):
     assert "弱點" in body  # the report panel ("VIX: 弱點/一致性報告") mounted in the browser DOM
 
 
+def test_b15_eval_panel_opens_in_browser(app):
+    """B15: the vix_eval panel (Model-Eval, clickable confusion matrix) mounts in the browser. The grid
+    has no eval_results.json, so it honestly renders the 'run eval-ingest' message — proving the mount +
+    the no-eval fallback. The clickable-cell -> set_view logic is asserted at the handler layer."""
+    _open_panel(app, "vix_eval")
+    app.page.screenshot(path=str(app.shots / "b15_eval_panel.png"), full_page=True)
+    body = app.page.locator("body").inner_text()
+    assert ("模型評估" in body) or ("eval-ingest" in body)  # the eval panel mounted in the live DOM
+
+
 def test_b4_confirm_golden_in_browser_writes_one_ledger_event(app):
     """B4: execute confirm_golden IN THE BROWSER (operator browser via keyboard) -> rev1 gains 'golden'
     AND the DecisionLog gains exactly one review/confirmed event with a valid chain (ledger-anchored)."""

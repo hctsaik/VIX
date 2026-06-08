@@ -308,6 +308,46 @@ def test_compute_visualization_partial_embeddings_raises(live):
         ad.compute_visualization()
 
 
+def test_eval_panel_clickable_confusion_jumps_to_misclassified(live):
+    """VixEvalPanel (Model-Eval OSS replacement): load eval_results.json -> clickable confusion matrix +
+    per-class P/R/F1; clicking a truth->pred cell drives the grid (set_view) to EXACTLY those misclassified
+    images via eval_ingest's confusion_hashes. Pure presentation; no new logic."""
+    import json
+    h = live.ds.first()["vix_hash"]
+    ev = {"iou_thr": 0.5, "mAP": 0.5, "per_class_ap": {"cat": 0.4, "dog": 0.6},
+          "n_gt": {"cat": 2, "dog": 1}, "confusion": {"cat->dog": 1}, "confusion_hashes": {"cat->dog": [h]},
+          "per_class": {"cat": {"tp": 1, "fp": 0, "fn": 1}, "dog": {"tp": 1, "fp": 1, "fn": 0}}}
+    live.cfg.eval_results_path.write_text(json.dumps(ev), encoding="utf-8")
+    op = PLUGIN.VixEvalPanel()
+    ctx = _ctx(live.ds, params={"x": "dog", "y": "cat"})  # click the (truth=cat -> pred=dog) cell
+    op.on_load(ctx)
+    assert ctx.panel.state.ready is True
+    assert set(ctx.panel.state.classes) >= {"cat", "dog"}
+    assert any(r["cls"] == "cat" for r in ctx.panel.state.prf)            # per-class P/R/F1 table built
+    ci, di = ctx.panel.state.classes.index("cat"), ctx.panel.state.classes.index("dog")
+    assert ctx.panel.state.z[ci][di] == 1 and ctx.panel.state.z[ci][ci] == 1  # orientation: z[truth][pred]; diag=TP
+    op.on_cell(ctx)
+    setviews = [c for c in ctx.ops.calls if c[0] == "set_view"]
+    assert len(setviews) == 1
+    assert h in [s["vix_hash"] for s in setviews[0][2].get("view")]       # jumped to the misclassified image
+
+
+def test_eval_panel_no_eval_friendly(live):
+    """No eval_results.json -> friendly 'run eval-ingest' message, not a crash, ready=False."""
+    if live.cfg.eval_results_path.exists():
+        live.cfg.eval_results_path.unlink()
+    ctx = _ctx(live.ds)
+    PLUGIN.VixEvalPanel().on_load(ctx)
+    assert ctx.panel.state.ready is False and "eval-ingest" in ctx.panel.state.md
+
+
+def test_eval_panel_diagonal_cell_no_jump(live):
+    """Clicking a diagonal (TP) cell does not set_view — there's no misclassification to show."""
+    ctx = _ctx(live.ds, params={"x": "cat", "y": "cat"})
+    PLUGIN.VixEvalPanel().on_cell(ctx)
+    assert not [c for c in ctx.ops.calls if c[0] == "set_view"]
+
+
 def test_compute_visualization_refit_refits(live):
     """refit=True forces a re-fit (re-anchor) even when fp/num_dims are unchanged."""
     ad = live.ad

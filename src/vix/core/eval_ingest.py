@@ -188,6 +188,10 @@ def evaluate(
     by_class_preds: dict[str, list[tuple]] = defaultdict(list)
     n_gt: dict[str, int] = defaultdict(int)
     confusion: dict[str, int] = defaultdict(int)
+    confusion_hashes: dict[str, list] = defaultdict(list)  # "truth->pred" -> vix_hashes (clickable matrix)
+    tp_c: dict[str, int] = defaultdict(int)                # per-class TP/FP/FN -> precision/recall/F1
+    fp_c: dict[str, int] = defaultdict(int)
+    fn_c: dict[str, int] = defaultdict(int)
     per_image: dict[str, dict] = {}
     fn_hashes: list[str] = []
     fp_hashes: list[str] = []
@@ -199,12 +203,16 @@ def evaluate(
         preds = img.get("pred", []) or []
         for g in gts:
             n_gt[g["label"]] += 1
+        h = img.get("vix_hash", "")
         per_pred, fn_labels, conf_pairs, n_fp, fpd, fnd = _match_image(gts, preds, iou_thr, loc_band)
         for conf, label, is_tp in per_pred:
             by_class_preds[label].append((conf, is_tp))
+            (tp_c if is_tp else fp_c)[label] += 1   # per-class TP / FP
+        for gl in fn_labels:
+            fn_c[gl] += 1                           # per-class FN (unmatched GT)
         for pl, gl in conf_pairs:
-            confusion[f"{gl}->{pl}"] += 1  # truth gl mis-detected as pl
-        h = img.get("vix_hash", "")
+            confusion[f"{gl}->{pl}"] += 1           # truth gl mis-detected as pl
+            confusion_hashes[f"{gl}->{pl}"].append(h)
         per_image[h] = {"n_fp": n_fp, "n_fn": len(fn_labels)}
         if fn_labels:
             fn_hashes.append(h)
@@ -232,9 +240,26 @@ def evaluate(
         "loc_gap": loc_gap,
         "n_gt": dict(n_gt),
         "confusion": dict(sorted(confusion.items(), key=lambda kv: -kv[1])),
+        "confusion_hashes": {k: sorted(set(v)) for k, v in confusion_hashes.items()},
+        "per_class": {c: {"tp": tp_c.get(c, 0), "fp": fp_c.get(c, 0), "fn": fn_c.get(c, 0)} for c in classes},
         "per_image": per_image,
         "fn_hashes": fn_hashes,
         "fp_hashes": fp_hashes,
         "fp_detail": fp_detail,
         "fn_detail": fn_detail,
     }
+
+
+def precision_recall_f1(per_class: dict) -> dict:
+    """Per-class precision / recall / F1 from {class: {tp, fp, fn}} counts (pure; no I/O). P = TP/(TP+FP),
+    R = TP/(TP+FN), F1 = 2PR/(P+R). These are MEASURED on the eval set (not a PROXY) — but only as good
+    as the eval labels (see weakness_report._UNVERIFIED_REF when the reference is imported, unreviewed)."""
+    out: dict = {}
+    for c, d in per_class.items():
+        tp, fp, fn = int(d.get("tp", 0)), int(d.get("fp", 0)), int(d.get("fn", 0))
+        p = tp / (tp + fp) if (tp + fp) else 0.0
+        r = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = 2 * p * r / (p + r) if (p + r) else 0.0
+        out[c] = {"precision": round(p, 4), "recall": round(r, 4), "f1": round(f1, 4),
+                  "tp": tp, "fp": fp, "fn": fn}
+    return out
