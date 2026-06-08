@@ -714,6 +714,54 @@ class FlagLooseBoxes(foo.Operator):
         return types.Property(out)
 
 
+class FlagImageQuality(foo.Operator):
+    """One click: surface IMAGE-level pixel-quality problems — blurry (low variance-of-Laplacian),
+    over/under-exposed (histogram clipping), and aspect-ratio outliers — by tagging them
+    vixq:blurry / vixq:exposed / vixq:aspect so they become a filterable, clickable worklist in the App.
+    The OSS replacement for FiftyOne Enterprise's "Data Quality" panel. Scans ALL samples (pixel-level,
+    so NO golden needed — unlike the label-audit ops). Zero new logic: calls the tested
+    pipeline.flag_image_quality. PROXY suspicions to review, never auto-edits/deletes."""
+
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="flag_image_quality",
+                                  label="VIX: 標出影像品質問題(模糊/曝光/長寬比)", dynamic=True)
+
+    def resolve_input(self, ctx):
+        inputs = types.Object()
+        inputs.view("info", types.Notice(
+            label="將掃描所有影像的像素品質(模糊/曝光/長寬比),標出 vixq:blurry / vixq:exposed / "
+                  "vixq:aspect 工作清單。免 golden(像素層級)。advisory:不刪檔、不改標,人工覆核後自行處理。"))
+        return types.Property(inputs, view=types.View(label="影像品質掃描(像素層級 Data Quality)"))
+
+    def execute(self, ctx):
+        # operator-browser launched -> resolve_input gives a confirm modal, resolve_output renders the
+        # counts/error; no ctx.ops.notify needed (parity with FlagLooseBoxes / FlagLabelIssues).
+        cfg, ad = Config(), _adapter(ctx)
+        try:
+            res = pipeline.flag_image_quality(ad, cfg, confirm=True)  # scans pixels, applies vixq:* tags
+        except Exception as exc:  # noqa: BLE001 - surface the reason rather than crash the App
+            return {"error": f"影像品質分析失敗:{exc}"}
+        t = res["tagged"]
+        total = sum(t.values())
+        ctx.ops.reload_dataset()  # so the new vixq:* tags show in the sidebar/saved views
+        hint = ("篩 vixq:blurry、vixq:exposed、vixq:aspect 逐張檢查(PROXY,勿自動刪)" if total
+                else "未發現影像品質問題(blur/exposure/aspect 皆在閾值內)")
+        return {"blurry": t["blur"], "exposed": t["exposure"], "aspect": t["aspect"], "hint": hint}
+
+    def resolve_output(self, ctx):
+        out = types.Object()
+        r = ctx.results or {}
+        if r.get("error"):
+            out.str("error", label="錯誤")
+            return types.Property(out)
+        out.int("blurry", label="模糊(張)")
+        out.int("exposed", label="曝光異常(張)")
+        out.int("aspect", label="長寬比離群(張)")
+        out.str("hint", label="怎麼看")
+        return types.Property(out)
+
+
 class BuildSimilarity(foo.Operator):
     """Build the OBJECT-BOX (patch) similarity index so the App's native sort-by-similarity works on
     YOUR boxes: pick a box → the magnifying glass → the whole dataset re-ranks by how that OBJECT looks
@@ -1078,5 +1126,6 @@ def register(p):
     p.register(FlagLabelIssues)
     p.register(AuditLabelErrors)
     p.register(FlagLooseBoxes)
+    p.register(FlagImageQuality)
     p.register(VixReportPanel)
     p.register(VixQueuePanel)

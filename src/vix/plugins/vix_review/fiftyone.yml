@@ -17,6 +17,7 @@ operators:
   - flag_label_issues
   - audit_label_errors
   - flag_loose_boxes
+  - flag_image_quality
 panels:
   - vix_report
   - vix_queue

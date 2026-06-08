@@ -218,6 +218,16 @@ def test_b11_audit_label_errors_runs_in_browser(app):
     assert len(_events(app.cfg, "audit_labels")) >= before + 1
 
 
+def test_b14_flag_image_quality_runs_in_browser(app):
+    """B14: flag_image_quality (the image-level Data Quality replacement) runs in the browser via the
+    operator browser, scans pixels of all samples, appends exactly one image_quality ledger event, and
+    leaves the App alive. No golden needed (pixel-level)."""
+    before = len(_events(app.cfg, "image_quality"))
+    _run_operator(app, "flag_image_quality", post_wait=5000)
+    assert len(_events(app.cfg, "image_quality")) >= before + 1
+    assert app.page.locator('[data-cy="looker"], canvas, [data-cy="fo-grid"]').count() >= 1  # App still alive
+
+
 def test_b12_explain_sample_runs_in_browser(app):
     """B12: explain_sample (drill-down) runs in the browser on a selection without crashing (read-only)."""
     s = app.ds.match({"vix_hash": "rev1"}).first() or app.ds.first()

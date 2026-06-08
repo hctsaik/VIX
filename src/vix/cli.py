@@ -384,6 +384,11 @@ def _build_parser() -> argparse.ArgumentParser:
     seb.add_argument("--map-drop", type=float, default=0.02, help="max allowed overall mAP drop")
     sbq = sub.add_parser("box-qa", help="per-box geometry QA on golden boxes (degenerate/truncated/area/aspect outliers) — read-only")
     sbq.add_argument("--top", type=int, default=50)
+    siq = sub.add_parser("image-quality", help="image-level pixel QA: blur / exposure / aspect outliers (read-only; --tag 標出 vixq:* 工作清單)")
+    siq.add_argument("--top", type=int, default=50)
+    siq.add_argument("--tag", action="store_true", help="標出 vixq:blurry/exposed/aspect 工作清單(否則只列出);advisory,不刪除")
+    siq.add_argument("--blur-floor", type=float, default=100.0, help="variance-of-Laplacian 低於此=模糊(絕對下限)")
+    siq.add_argument("--expo-floor", type=float, default=0.10, help="直方圖任一端裁切比例高於此=過曝/過暗")
     sbt = sub.add_parser("box-tightness", help="opt-in pixel-level GT box-tightness vs a SAM mask (catches loose/misaligned boxes box-qa can't) — needs ultralytics SAM")
     sbt.add_argument("--limit", type=int, default=60, help="sample at most N golden images (SAM is ~1s/box on CPU)")
     sbt.add_argument("--iou-thr", type=float, default=0.6)
@@ -1091,6 +1096,25 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"{it['id']}  [{it['issue']}] {it['label']}: {it['why']}")
         if not issues:
             print("無框品質問題(或 golden 框數不足以建立各類包絡)")
+
+    elif args.cmd == "image-quality":
+        if args.tag:
+            res = pipeline.flag_image_quality(adapter, cfg, confirm=True,
+                                              blur_floor=args.blur_floor, expo_floor=args.expo_floor)
+            t = res["tagged"]
+            print(f"已標出 vixq:blurry={t['blur']} / vixq:exposed={t['exposure']} / vixq:aspect={t['aspect']}"
+                  "(advisory 工作清單;vix app 可當 saved view 逐張檢查,確認後自行處理,不會自動刪)")
+        else:
+            issues = pipeline.image_quality(adapter, cfg, top=args.top,
+                                            blur_floor=args.blur_floor, expo_floor=args.expo_floor)
+            for it in issues:
+                print(f"{it['id']}  [{it['issue']}] {it['why']}")
+            if not issues:
+                print("無影像品質問題(blur/exposure/aspect 皆在閾值內)")
+            from vix.core.image_quality import CAVEATS
+            for c in CAVEATS:                       # surface the honest scene-dependence / heuristic caveats
+                print("註:" + c.strip("_"))
+            print("(加 --tag 寫入 vixq:* 工作清單;一律 advisory,不會自動刪)")
 
     elif args.cmd == "hardneg":
         r = pipeline.hardneg(adapter, cfg, top=args.top, mode=args.mode, batch=args.batch)

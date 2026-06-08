@@ -1694,6 +1694,55 @@ def box_qa(adapter, cfg, top=50, min_support=8):  # T1c per-box geometry QA (rea
     return issues[:top]
 
 
+def image_quality(adapter, cfg, top=50, blur_floor=100.0, expo_floor=0.10, min_support=8):  # T1d image-level QA
+    """Static IMAGE-level pixel quality audit (the offline replacement for FiftyOne Enterprise's
+    "Data Quality" panel, which VIX lacks at the pixel level — box_qa is box-geometry only): blur
+    (variance-of-Laplacian), exposure (histogram clipping), aspect-ratio outliers. Loads each sample's
+    src_path with PIL and calls the pure core. Scans ALL samples (pixel-level, NOT golden-scoped).
+    Read-only: returns a ranked advisory list, writes no tags and no ledger (same posture as box_qa).
+    PROXY — surfaces suspect images to review, never auto-edits/deletes."""
+    from PIL import Image
+
+    from .core.image_quality import scan_images
+
+    records = []  # (vix_hash, ndarray) — mirror box_tightness opening Image.open over adapter.samples()
+    for h, src, _dets, _tags in adapter.samples():
+        try:
+            records.append((h, np.asarray(Image.open(src).convert("RGB"))))
+        except Exception:  # noqa: BLE001 - unreadable/truncated/missing image -> skip (box_tightness parity)
+            continue
+    scan = scan_images(records, blur_abs_floor=blur_floor, expo_abs_floor=expo_floor, min_support=min_support)
+    log.info("image_quality: %d images scanned, %d issues", len(records), len(scan.ranked))
+    return scan.ranked[:top]
+
+
+def flag_image_quality(adapter, cfg, confirm=False, blur_floor=100.0, expo_floor=0.10, min_support=8):
+    """Two-step like prune/harmful: default read-only worklist (returns candidates); --confirm tags
+    advisory `vixq:blurry` / `vixq:exposed` / `vixq:aspect` so the App surfaces them as clickable saved
+    views (via worklist_views). Advisory tags only — never REJECTED, never auto-deletes; clear by
+    removing the tag. Logs one image_quality audit entry when confirmed."""
+    issues = image_quality(adapter, cfg, top=10**9, blur_floor=blur_floor, expo_floor=expo_floor,
+                           min_support=min_support)
+    if not confirm:
+        return {"confirmed": False, "candidates": issues}
+    tag_of = {"blur": "vixq:blurry", "exposure": "vixq:exposed", "aspect": "vixq:aspect"}
+    tagged = {"blur": 0, "exposure": 0, "aspect": 0}
+    for it in issues:
+        tag = tag_of.get(it["issue"])
+        if not tag:
+            continue
+        try:
+            adapter.apply_tags(it["id"], [tag])   # advisory worklist tag (mirrors batch_gate worklist)
+            tagged[it["issue"]] += 1
+        except Exception:  # noqa: BLE001 - id may not be a live sample
+            pass
+    DecisionLog(cfg.decision_log_path).append(
+        "image_quality", decision=str(sum(tagged.values())),
+        extra={"tagged": tagged, "note": "advisory pixel-quality worklist tags; PROXY, never auto-edits"})
+    log.info("flag_image_quality: tagged %s", tagged)
+    return {"confirmed": True, "tagged": tagged, "candidates": issues}
+
+
 def box_tightness(adapter, cfg, model="mobile_sam.pt", limit=60, iou_thr=0.6, top=50):  # opt-in, needs SAM
     """Pixel-level GT box-tightness audit via a SAM mask — the one check box_qa structurally can't do
     (box_qa is geometry-only; loc_gap measures the MODEL's looseness, not the GT's). For each golden box

@@ -777,6 +777,23 @@ def test_op_flag_label_issues(live):
     assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)  # audit only, no human-decision write
 
 
+def test_op_flag_image_quality(live):
+    """GUI 'image quality' operator (OSS replacement for Enterprise Data Quality): scans PIXELS of ALL
+    samples (NOT golden-scoped), tags vixq:blurry/exposed/aspect. No crash, counts are ints, no review
+    write (advisory only), chain valid; the live fixture's filepaths are real on-disk pixels so the PIL
+    decode path is exercised."""
+    op = PLUGIN.FlagImageQuality()
+    before = len(_reviews(live.cfg))
+    out = op.execute(_ctx(live.ds))
+    assert "error" not in out, out
+    assert all(isinstance(out[k], int) for k in ("blurry", "exposed", "aspect"))
+    # non-vacuous: the vix_verify fixture images clip heavily -> something is flagged AND a vixq tag lands
+    assert out["blurry"] + out["exposed"] + out["aspect"] >= 1, out
+    live.ds.reload()
+    assert any(t.startswith("vixq:") for s in live.ds for t in s.tags)  # the tag actually landed (live path)
+    assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)   # tags only, no human-decision write
+
+
 def test_r2_saved_views_from_worklist_tags(live):
     """R2-35 (the saved-views-in-sidebar gap): a vixq:* worklist tag -> a NAMED saved view (the exact path
     `vix app` uses to build the clickable sidebar) that resolves to the tagged sample. Non-vacuous."""
