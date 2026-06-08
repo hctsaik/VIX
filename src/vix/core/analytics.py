@@ -10,6 +10,8 @@ answers a CV engineer actually wants:
     class_distribution       S5  label counts
     coverage_gaps            S5  per-class sparse subgroups + under-represented
     coverage_delta           S4  how much a new batch covers unseen regions
+    coverage_regions         S5b per-class within-class density groups: scarce/enough/over
+    coverage_gapfill         S4b per new sample: fills-gap / redundant / duplicate
     active_learning_ranking  S6  uncertainty + diversity ranking
 """
 
@@ -218,6 +220,134 @@ def coverage_delta(
         if nearest > radius:
             novel.append(it.id)
     return {"novel_fraction": len(novel) / len(new_items), "novel_ids": novel}
+
+
+# class-level support floor: below this a coverage verdict is unstable, so withhold it.
+# Same value/spirit as weakness_report._MIN_SUPPORT (kept independent to avoid a cross-import).
+_MIN_SUPPORT = 20
+
+
+def _partition_regions(items: list[EmbItem], region_distance: float) -> list[list[str]]:
+    """Full partition of one class's items into within-class density groups (union-find),
+    INCLUDING singletons (near_duplicate_groups drops len<2 groups). A 'region' = an appearance
+    sub-cluster. NOTE single-linkage: at a loose distance transitive chaining can merge a whole
+    class into one group — callers must surface that via the chaining guard (max_region_frac)."""
+    groups = near_duplicate_groups(items, region_distance) if len(items) > 1 else []
+    grouped = {i for g in groups for i in g}
+    regions = [list(g) for g in groups]
+    regions.extend([it.id] for it in items if it.id not in grouped)
+    return regions
+
+
+def _region_representative(rids: list[str], by_id: dict[str, EmbItem]) -> str:
+    """Medoid: the member whose embedding is closest to the region centroid (the one to SHOW)."""
+    if len(rids) == 1:
+        return rids[0]
+    E = _l2norm(np.vstack([np.asarray(by_id[i].embedding, float) for i in rids]))
+    centroid = _l2norm(E.mean(axis=0, keepdims=True)).ravel()
+    return rids[int(np.argmax(E @ centroid))]
+
+
+def coverage_regions(
+    items: list[EmbItem],
+    region_distance: float = 0.25,
+    min_support: int = _MIN_SUPPORT,
+    over_min: int = 3,
+    chain_frac: float = 0.6,
+) -> dict[str, dict]:
+    """Per-class WITHIN-class coverage broken into density groups (eval-free, high-dim cosine only).
+
+    For each class, split its detection crops into within-class regions via single-linkage union-find
+    at a LOOSE ``region_distance``. Per region emit a verdict:
+        SCARCE  (count == 1)          — a rare appearance subtype, collect more of this kind
+        OVER    (count >= over_min)   — a near-duplicate cluster, redundancy/prune candidate
+        ENOUGH  (otherwise)
+    Two honesty guards (decisions stay relative + refuse when unreliable):
+      * support floor — if a class has < ``min_support`` items, its per-region verdict is WITHHELD
+        (status="") and only the count is trustworthy (``verdict_withheld``).
+      * chaining guard — if the largest region holds > ``chain_frac`` of the class, single-linkage has
+        chained the class into one blob; verdicts are WITHHELD and ``chained`` is set, so we never
+        claim trustworthy sub-regions where none exist.
+    ``weakness_proxy`` = mean(1 - confidence) (the eval-free uncertainty proxy used elsewhere); it is a
+    PROXY for "where the model struggles", NOT a measured AP. UMAP is never consulted here.
+    """
+    by: dict[str, list[EmbItem]] = defaultdict(list)
+    for it in items:
+        by[it.label].append(it)
+    by_id = {it.id: it for it in items}
+    out: dict[str, dict] = {}
+    for c, group in by.items():
+        n = len(group)
+        cls_proxy = float(np.mean([1.0 - g.confidence for g in group]))
+        region_ids = _partition_regions(group, region_distance)
+        region_ids.sort(key=lambda r: -len(r))  # largest first -> stable R0, R1, ...
+        max_frac = (max(len(r) for r in region_ids) / n) if n else 0.0
+        withheld = n < min_support
+        chained = (not withheld) and max_frac > chain_frac
+        regions: list[dict] = []
+        for ridx, rids in enumerate(region_ids):
+            rcount = len(rids)
+            if withheld or chained:
+                status = ""
+            elif rcount >= over_min:
+                status = "OVER"
+            elif rcount == 1:
+                status = "SCARCE"
+            else:
+                status = "ENOUGH"
+            regions.append({
+                "region_id": f"R{ridx}",
+                "ids": rids,
+                "count": rcount,
+                "status": status,
+                "weakness_proxy": round(float(np.mean([1.0 - by_id[i].confidence for i in rids])), 3),
+                "representative_id": _region_representative(rids, by_id),
+            })
+        out[c] = {
+            "count": n,
+            "verdict_withheld": withheld,
+            "chained": chained,
+            "max_region_frac": round(max_frac, 3),
+            "weakness_proxy": round(cls_proxy, 3),
+            "n_regions": len(regions),
+            "regions": regions,
+            "scarce_regions": [r["region_id"] for r in regions if r["status"] == "SCARCE"],
+            "over_regions": [r["region_id"] for r in regions if r["status"] == "OVER"],
+        }
+    return out
+
+
+def coverage_gapfill(
+    new_items: list[EmbItem],
+    existing_items: list[EmbItem],
+    radius: float = 0.2,
+    dup_distance: float = 0.05,
+) -> list[dict]:
+    """Per-NEW-sample verdict vs an existing reference (high-dim cosine):
+        fills_gap  — nearest existing distance > radius (lands where existing data doesn't reach)
+        duplicate  — nearest existing distance < dup_distance (near-identical to something we have)
+        redundant  — otherwise (covered; labelling adds little)
+    The fills_gap set is exactly ``coverage_delta(new, existing, radius)['novel_ids']``; this adds the
+    nearest existing id + distance so a human can SHOW that neighbour and veto a false "novel" (a crop
+    still carries background, so same-object/new-background can read as novel). Returns rows ordered as
+    given (most-novel-first if the caller pre-sorts)."""
+    if not new_items:
+        return []
+    if not existing_items:
+        return [{"id": it.id, "verdict": "fills_gap", "nearest_id": None,
+                 "nearest_distance": None, "novelty": 1.0} for it in new_items]
+    eids = [e.id for e in existing_items]
+    E = _l2norm(np.vstack([np.asarray(e.embedding, float) for e in existing_items]))
+    rows: list[dict] = []
+    for it in new_items:
+        q = _l2norm(np.asarray(it.embedding, float).reshape(1, -1)).ravel()
+        sims = E @ q
+        j = int(np.argmax(sims))
+        nearest = 1.0 - float(sims[j])
+        verdict = "fills_gap" if nearest > radius else "duplicate" if nearest < dup_distance else "redundant"
+        rows.append({"id": it.id, "verdict": verdict, "nearest_id": eids[j],
+                     "nearest_distance": round(nearest, 4), "novelty": round(nearest, 4)})
+    return rows
 
 
 def active_learning_ranking(

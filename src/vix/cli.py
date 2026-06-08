@@ -28,6 +28,12 @@ from .types import Tag
 
 log = get_logger("vix.cli")
 
+# coverage-map footers (kept in the CLI's plain-language voice; the PROXY claim mirrors pipeline)
+_COVERAGE_FOOTER = (
+    "注:region = 目前 embedding 空間的密度群(single-linkage);proxy = 平均(1-信心),"
+    "僅供同模型同資料內排序,非實測 mAP(PROXY)。決策皆在高維 cosine,UMAP 僅視覺化。")
+_COVERAGE_UNVERIFIED_NOTE = "(參照 = 你匯入的標籤,未經 VIX 覆核;SCARCE/OVER 是相對這份未驗證標註而言)"
+
 _QUICKSTART = """\
 VIX 快速上手
 =====================
@@ -209,6 +215,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sv = sub.add_parser("value", help="how much new (non-golden) data covers novel regions")
     sv.add_argument("--radius", type=float, default=0.2)
+
+    scm = sub.add_parser("coverage-map",
+                         help="類別內密度群 scarce/enough/over(+鏈化守門),回答『哪種資料太少/夠/太多』(eval-free)")
+    scm.add_argument("--region-distance", type=float, default=0.25, help="密度群的鬆 cosine 閾值")
+    scm.add_argument("--target", type=int, default=None, help="絕對的 per-class 目標張數(算 collect-more)")
+
+    sgf = sub.add_parser("gap-fill", help="每個新樣本:fills-gap / redundant / duplicate vs 參照(附最近鄰)")
+    sgf.add_argument("--radius", type=float, default=0.2)
+
+    spr = sub.add_parser("prune",
+                         help="近似重複冗餘影像的剔除候選(預設 read-only;--confirm 才剔除,四護欄+可還原)")
+    spr.add_argument("--max-distance", type=float, default=0.05)
+    spr.add_argument("--confirm", action="store_true", help="實際標記 rejected(否則只列候選)")
+    spr.add_argument("--note", default="", help="稽核備註")
 
     sal = sub.add_parser("active-learn", help="rank unlabeled candidates to label next")
     sal.add_argument("--budget", type=int, default=50)
@@ -617,6 +637,65 @@ def _main(argv: list[str] | None = None) -> int:
     elif args.cmd == "value":
         res = pipeline.coverage_value(adapter, cfg, args.radius)
         print(f"novel coverage: {res['novel_fraction']:.1%} ({len(res['novel_ids'])} images)")
+
+    elif args.cmd == "coverage-map":
+        res = pipeline.coverage_map(adapter, cfg, region_distance=args.region_distance, target=args.target)
+        if not res["ok"]:
+            print(res["reason"])
+        else:
+            ref = "golden" if res["reference"] == "golden" else "匯入標籤(未覆核)"
+            print(f"覆蓋地圖(參照={ref},backend={res['embedding_backend']})")
+            _arrow = {"SCARCE": "← 補這區優先(vix active-learn / error-mine)",
+                      "OVER": "→ 冗餘候選,可 vix prune", "ENOUGH": ""}
+            for c, v in sorted(res["classes"].items(), key=lambda kv: -kv[1]["count"]):
+                if v["verdict_withheld"]:
+                    flag = "  [n少,不予判定]"
+                elif v["chained"]:
+                    flag = f"  [CHAINED:最大群佔 {v['max_region_frac']:.0%},只給整類 scarcity]"
+                else:
+                    flag = ""
+                need = f"  還需~{v['need']}" if v.get("under_represented") else ""
+                print(f"{c}: n={v['count']}{need}  proxy={v['weakness_proxy']}{flag}")
+                if not (v["verdict_withheld"] or v["chained"]):
+                    for r in v["regions"]:
+                        if r["status"]:
+                            print(f"    {r['region_id']} n={r['count']} {r['status']} "
+                                  f"proxy={r['weakness_proxy']}  {_arrow[r['status']]}")
+            if "delta" in res:
+                d = res["delta"]
+                if d["encoder_changed"]:
+                    print("⚠ 編碼器指紋與上次快照不同 → Δ 不可比(請以同一編碼器重算)")
+                else:
+                    for c, row in d["classes"].items():
+                        if row["delta"]:
+                            note = "" if row["stable"] else "(n少不穩)"
+                            print(f"  Δ {c}: {row['before']} → {row['after']} ({row['delta']:+d}){note}")
+            print(_COVERAGE_FOOTER)
+            if res["reference"] == "provisional":
+                print(_COVERAGE_UNVERIFIED_NOTE)
+
+    elif args.cmd == "gap-fill":
+        rows = pipeline.gap_fill(adapter, cfg, args.radius)
+        from collections import Counter as _Counter
+        tally = _Counter(r["verdict"] for r in rows)
+        for r in rows:
+            nd = f"{r['nearest_distance']:.3f}" if r["nearest_distance"] is not None else "—"
+            print(f"{r['id']}  {r['verdict']}  最近鄰={r['nearest_id']} dist={nd}")
+        print(f"{len(rows)} new: fills_gap={tally['fills_gap']} "
+              f"redundant={tally['redundant']} duplicate={tally['duplicate']}")
+        print("注:fills_gap = 落在參照覆蓋不到的區;務必看『最近鄰影像』確認(crop 仍含背景,可能誤判)。")
+
+    elif args.cmd == "prune":
+        res = pipeline.prune(adapter, cfg, max_distance=args.max_distance,
+                             confirm=args.confirm, note=args.note)
+        for r in res["candidates"]:
+            rob = "穩健" if r.get("robust") else "邊緣"
+            print(f"{r['id']}  class={r['class']}  保留代表={r['kept_representative_id']}  ({rob})")
+        if res["confirmed"]:
+            print(f"已剔除 {len(res['removed'])} 張冗餘(tag=rejected;vix restore-dismissed 可還原,已記稽核)")
+        else:
+            print(f"{len(res['candidates'])} 個冗餘候選(read-only;加 --confirm 才會剔除)。"
+                  "四護欄:不砍到類別<20、不砍 protected、不砍跨 split、保留代表。")
 
     elif args.cmd == "active-learn":
         for r in pipeline.active_learn(adapter, cfg, args.budget):

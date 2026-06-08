@@ -8,7 +8,8 @@ append-only DecisionLog.
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -18,11 +19,14 @@ from .config import Config
 from .core import snapshot as snap_mod
 from .core import verify as verify_mod
 from .core.analytics import (
+    _MIN_SUPPORT,
     EmbItem,
     active_learning_ranking,
     class_distribution,
     coverage_delta,
+    coverage_gapfill,
     coverage_gaps,
+    coverage_regions,
     cross_period_drift,
     cross_split_leakage,
     harmful_ranking,
@@ -501,6 +505,172 @@ def coverage_value(adapter, cfg, radius=0.2):  # S4
     log.info("coverage_value: %.1f%% of %d new images cover novel regions",
              res["novel_fraction"] * 100, len(new))
     return res
+
+
+# --- coverage manager (S5b/S4b): scarce/enough/over + gap-fill + prune --------------
+# Honesty strings: reuse the established PROXY / unverified-reference voice, no new wording invented.
+_COVERAGE_NO_REF = (
+    "覆蓋地圖需要「已標註且有 DINO 嵌入」的參照樣本(golden,或 vix diagnose 匯入的標籤),"
+    "但目前一個都找不到。\n請先 vix ingest + infer + embed,或 vix diagnose 匯入你的標籤。")
+_COVERAGE_PROXY_NOTE = (
+    "注:region = 目前 embedding 空間的密度群(single-linkage);proxy = 平均(1-信心),"
+    "僅供同模型同資料內排序,非實測 mAP 增益(PROXY)。決策皆在高維 cosine,UMAP 僅視覺化。")
+_COVERAGE_UNVERIFIED = "（參照 = 你匯入的標籤,未經 VIX 覆核;SCARCE/OVER 是相對這份未驗證標註而言)"
+
+
+def _live_encoder_fp(adapter):
+    try:
+        return (adapter.encoder_fingerprint() or {}).get("fp")
+    except Exception:  # noqa: BLE001 - fingerprint is optional provenance, never fail over it
+        return None
+
+
+def _coverage_reference_items(adapter):
+    """Reference crops for coverage: GOLDEN if any, else fall back to imported PROVISIONAL (unverified)."""
+    gold = _detection_items(adapter, want_tags=[Tag.GOLDEN])
+    if gold:
+        return gold, "golden"
+    prov = _detection_items(adapter, want_tags=[Tag.PROVISIONAL])
+    if prov:
+        return prov, "provisional"
+    return [], "none"
+
+
+def _latest_prior_coverage(cfg):
+    d = cfg.workspace / "coverage"
+    files = sorted(d.glob("coverage_*.json")) if d.exists() else []
+    return json.loads(files[-1].read_text(encoding="utf-8")) if files else None
+
+
+def _write_coverage_snapshot(cfg, result):  # timestamped so the next run can auto-diff (health_report pattern)
+    d = cfg.workspace / "coverage"
+    d.mkdir(parents=True, exist_ok=True)
+    stamp = result["generated_at"].replace(":", "").replace("-", "").replace(".", "")
+    (d / f"coverage_{stamp}.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _coverage_delta_report(prev, cur):
+    """Per-class count Δ vs the previous snapshot; no directional claim below the support floor, and a
+    loud not-comparable flag if the encoder fingerprint changed (distances aren't comparable then)."""
+    out = {"encoder_changed": bool(prev.get("encoder_fp") and cur.get("encoder_fp")
+                                    and prev["encoder_fp"] != cur["encoder_fp"]),
+           "classes": {}}
+    pc = prev.get("classes", {})
+    for c, v in cur["classes"].items():
+        before = pc.get(c, {}).get("count")
+        now = v["count"]
+        out["classes"][c] = {
+            "before": before, "after": now,
+            "delta": (now - before) if before is not None else None,
+            "stable": now >= _MIN_SUPPORT,  # arrow only above the floor
+        }
+    return out
+
+
+def coverage_map(adapter, cfg, region_distance=0.25, target=None, snapshot=True):  # S5b
+    """Per-class within-class density-group coverage: scarce/enough/over, eval-free, advisory.
+    Fails closed (no golden/provisional reference). Writes a timestamped snapshot so the next run
+    auto-diffs (before/after loop). Logs only when an actionable scarce/over verdict is emitted."""
+    items, ref = _coverage_reference_items(adapter)
+    if not items:
+        return {"ok": False, "reason": _COVERAGE_NO_REF}
+    gaps = coverage_gaps(items, k=min(5, cfg.knn_k), target=target)
+    regions = coverage_regions(items, region_distance)
+    classes = {c: {**v, "under_represented": gaps[c]["under_represented"], "need": gaps[c]["need"]}
+               for c, v in regions.items()}
+    result = {
+        "ok": True, "reference": ref, "encoder_fp": _live_encoder_fp(adapter),
+        "embedding_backend": cfg.embedding_backend, "classes": classes,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    prev = _latest_prior_coverage(cfg)
+    if prev:
+        result["delta"] = _coverage_delta_report(prev, result)
+    if snapshot:
+        _write_coverage_snapshot(cfg, result)
+    actionable = any(v["scarce_regions"] or v["over_regions"] for v in classes.values())
+    if actionable:  # decision/alert -> log (read-only render does not; mirrors new_classes/coverage)
+        DecisionLog(cfg.decision_log_path).append(
+            "coverage_map", decision=ref,
+            extra={"classes": len(classes), "encoder_fp": result["encoder_fp"],
+                   "scarce": [c for c, v in classes.items() if v["scarce_regions"]],
+                   "over": [c for c, v in classes.items() if v["over_regions"]]})
+    log.info("coverage_map: %d classes (ref=%s)", len(classes), ref)
+    return result
+
+
+def gap_fill(adapter, cfg, radius=0.2):  # S4b — per new sample: fills_gap / redundant / duplicate
+    new = _image_items(adapter, exclude_tags=[Tag.GOLDEN, Tag.ANCHOR, Tag.EVAL, Tag.REJECTED])
+    existing = (_image_items(adapter, want_tags=[Tag.GOLDEN])
+                or _image_items(adapter, want_tags=[Tag.PROVISIONAL]))
+    rows = coverage_gapfill(new, existing, radius)
+    tally = Counter(r["verdict"] for r in rows)
+    log.info("gap_fill: %d new -> %d fills / %d redundant / %d dup", len(rows),
+             tally.get("fills_gap", 0), tally.get("redundant", 0), tally.get("duplicate", 0))
+    return rows
+
+
+def _load_protected(cfg):
+    """Protected classes from the challenge-guard baseline — never prune these (fail-closed)."""
+    p = cfg.eval_baseline_path
+    if p.exists():
+        try:
+            return set((json.loads(p.read_text(encoding="utf-8")).get("protected") or {}).keys())
+        except Exception:  # noqa: BLE001
+            return set()
+    return set()
+
+
+def prune_candidates(adapter, cfg, max_distance=0.05):
+    """Read-only worklist of redundant near-duplicate IMAGES (the only safe prune category), keeping one
+    representative per group. Four hard guards (none overridable): never drop a class below the support
+    floor, never prune a protected class, never prune a cross-split-leakage member, always name the kept
+    representative. Each row carries a threshold-sensitivity flag (still a near-dup at a tighter cut)."""
+    items = _image_items(adapter, exclude_tags=[Tag.REJECTED])
+    if not items:
+        return []
+    by_id = {it.id: it for it in items}
+    counts = Counter(it.label for it in items)
+    protected = _load_protected(cfg)
+    leak_ids = {i for lk in cross_split_leakage(items, max_distance) for i in lk["ids"]}
+    tight = {i for g in near_duplicate_groups(items, max_distance * 0.6) for i in g}
+    removed = Counter()
+    rows: list[dict] = []
+    from .core.analytics import _region_representative as _rep
+    for g in near_duplicate_groups(items, max_distance):
+        rep = _rep(g, by_id)
+        for i in g:
+            if i == rep:
+                continue
+            lbl = by_id[i].label
+            if lbl in protected:                                  # guard 2
+                continue
+            if i in leak_ids:                                     # guard 3
+                continue
+            if counts[lbl] - removed[lbl] - 1 < _MIN_SUPPORT:     # guard 1
+                continue
+            removed[lbl] += 1
+            rows.append({"id": i, "kept_representative_id": rep, "class": lbl,  # guard 4: rep named
+                         "robust": i in tight})
+    log.info("prune_candidates: %d redundant images (max_distance=%.3f)", len(rows), max_distance)
+    return rows
+
+
+def prune(adapter, cfg, max_distance=0.05, confirm=False, note=""):
+    """Two-step like harmful: default read-only worklist; --confirm tags REJECTED + audits (reversible
+    via restore-dismissed). Never auto-deletes."""
+    rows = prune_candidates(adapter, cfg, max_distance)
+    if not confirm:
+        return {"confirmed": False, "candidates": rows}
+    ids = [r["id"] for r in rows]
+    _require_known(adapter, ids)
+    for h in ids:
+        adapter.apply_tags(h, [Tag.REJECTED])
+    DecisionLog(cfg.decision_log_path).append(
+        "prune", decision=str(len(ids)), extra={"ids": ids, "note": note, "max_distance": max_distance})
+    log.info("prune: removed %d redundant images (%s)", len(ids), note)
+    return {"confirmed": True, "removed": ids, "candidates": rows}
 
 
 def active_learn(adapter, cfg, budget):  # S6
