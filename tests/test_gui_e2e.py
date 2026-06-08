@@ -244,7 +244,8 @@ def test_build_similarity_survives_stale_adapter(live, monkeypatch):
 def test_gui_compute_visualization_builds_umap(live):
     """Embeddings-viz (OSS replacement for Enterprise 'Create Embeddings'): ComputeVisualization builds
     a UMAP brain run (vix_umap) from the DINO vectors so the native Embeddings panel can plot it.
-    Read-only w.r.t. reviews; idempotent."""
+    OBJECT-LEVEL: the run carries a patches_field so the panel plots one point per YOLO box, not per
+    image. Read-only w.r.t. reviews; idempotent."""
     op = PLUGIN.ComputeVisualization()
     before = len(_reviews(live.cfg))
     out = op.execute(_ctx(live.ds))
@@ -253,6 +254,8 @@ def test_gui_compute_visualization_builds_umap(live):
     assert "vix_umap" in live.ds.list_brain_runs()
     info = live.ds.get_brain_info("vix_umap")
     assert "Visualization" in info.config.cls or "umap" in info.config.cls.lower()  # a viz run, not similarity
+    # object-level: one UMAP point per detection box (mirrors the patch-similarity assertion)
+    assert getattr(info.config, "patches_field", None) == "yolo_detections"
     assert op.execute(_ctx(live.ds)).get("brain_key") == "vix_umap"   # idempotent re-run, no crash
     assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)
 

@@ -295,33 +295,38 @@ class FiftyOneAdapter(DatasetAdapter):
         return out
 
     def compute_visualization(self, embeddings_field: str = _EMB_FIELD) -> str:
-        """UMAP 2D projection of the per-sample DINOv2 embedding -> the OSS App's native Embeddings
-        panel plots it (pick brain_key 'vix_umap') with lasso-select, fully offline. The in-App
-        'Create Embeddings' button is FiftyOne-Enterprise-gated; this builds the run from code instead.
-        Idempotent: replaces any prior run so the operator can be re-clicked."""
+        """UMAP 2D projection of the per-DETECTION DINOv2 crop embeddings -> the OSS App's native
+        Embeddings panel plots ONE POINT PER OBJECT BOX (not per image), with lasso-select, fully offline.
+        Lassoing selects OBJECTS, so you cluster/triage actual defects, not whole scenes (a per-image mean
+        is dominated by background). The in-App 'Create Embeddings' button is FiftyOne-Enterprise-gated;
+        this builds the run from code instead. Idempotent: replaces any prior run.
+
+        Object-level mirrors build_patch_similarity: hand brain an explicit {sample_id: (n_patches, dim)}
+        array of OUR vectors with patches_field=, never a field NAME (a field name doesn't register the
+        dynamic per-detection field, so brain would silently download a default zoo model to recompute)."""
         import fiftyone.brain as fob
 
         ds = self._dataset()
         if "vix_umap" in ds.list_brain_runs():
             ds.delete_brain_run("vix_umap")
-        # one vector per sample (UMAP is sample-level): use the sample-level field if present, else the
-        # mean of the per-detection crop embeddings. Pass an explicit array so brain uses OUR vectors
-        # (never a zoo model — same reason as build_patch_similarity).
-        vecs = []
+        emb: dict = {}      # {sample_id: (n_patches, dim)} — exactly like build_patch_similarity
+        n_dets = 0          # distinguish "no boxes at all" from "boxes but no embeddings"
         for s in ds.iter_samples():
-            v = s.get_field(embeddings_field) if s.has_field(embeddings_field) else None
-            if v is None:
-                field = s[_DET_FIELD]
-                dee = [d.get_field(embeddings_field) for d in (field.detections if field else [])
-                       if d.has_field(embeddings_field) and d.get_field(embeddings_field) is not None]
-                v = np.mean(np.vstack(dee), axis=0) if dee else None
-            vecs.append(None if v is None else np.asarray(v, dtype=float))
-        if not any(v is not None for v in vecs):
-            raise ValueError("找不到 DINO 嵌入;請先計算嵌入(vix embed / 建立相似索引)")
-        if any(v is None for v in vecs):
-            raise ValueError("部分樣本缺少嵌入,無法做整體視覺化;請先對全部樣本計算嵌入(vix embed)")
-        fob.compute_visualization(ds, embeddings=np.asarray(vecs, dtype=float), method="umap", brain_key="vix_umap")
-        log.info("fiftyone.compute_visualization: vix_umap (UMAP over %d samples)", len(vecs))
+            field = s[_DET_FIELD]
+            if field is None or not field.detections:
+                continue
+            n_dets += len(field.detections)
+            vecs = [d.get_field(embeddings_field) for d in field.detections
+                    if d.has_field(embeddings_field) and d.get_field(embeddings_field) is not None]
+            if vecs and len(vecs) == len(field.detections):  # all-or-nothing keeps array<->patch order aligned
+                emb[s.id] = np.array(vecs, dtype=float)
+        if n_dets == 0:
+            raise ValueError("找不到偵測框,無法做物件級視覺化;請先跑偵測(vix infer)")
+        if not emb:
+            raise ValueError("找不到偵測框的 DINO 嵌入;請先計算嵌入(vix embed / 建立相似索引會自動計算)")
+        fob.compute_visualization(ds, patches_field=_DET_FIELD, embeddings=emb, method="umap", brain_key="vix_umap")
+        log.info("fiftyone.compute_visualization: vix_umap (UMAP over %d object boxes in %d samples)",
+                 sum(len(v) for v in emb.values()), len(emb))
         return "vix_umap"
 
     def launch_app(self, saved_views: dict | None = None) -> None:

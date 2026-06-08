@@ -245,6 +245,8 @@ def test_b12z_compute_visualization_creates_umap(app):
     _run_operator(app, "compute_visualization", post_wait=8000)
     app.ds.reload()
     assert "vix_umap" in app.ds.list_brain_runs()
+    # object-level: the run carries patches_field so the panel plots one point per box, not per image
+    assert getattr(app.ds.get_brain_info("vix_umap").config, "patches_field", None) == "yolo_detections"
 
 
 def test_b13_queue_inspect_opens_sample_modal(app):

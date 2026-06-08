@@ -837,8 +837,9 @@ class BuildSimilarity(foo.Operator):
 class ComputeVisualization(foo.Operator):
     """Build the Embeddings VISUALIZATION (UMAP of your DINOv2 vectors) so the App's native Embeddings
     panel plots an interactive 2D map you can lasso-select — the OSS replacement for the Enterprise-gated
-    'Create Embeddings' button. Zero new logic: computes DINO embeddings if missing, then
-    adapter.compute_visualization (brain_key vix_umap). Offline, no zoo model."""
+    'Create Embeddings' button. OBJECT-LEVEL: one point per YOLO detection box (not per image), so the
+    plot/lasso are about objects, not whole scenes. Computes DINO crop embeddings if missing, then
+    adapter.compute_visualization (brain_key vix_umap, patches_field). Offline, no zoo model."""
 
     @property
     def config(self):
@@ -859,7 +860,7 @@ class ComputeVisualization(foo.Operator):
             have = False
         inputs = types.Object()
         if have:
-            inputs.view("info", types.Notice(label="偵測框已有 DINO 嵌入 → 直接算 UMAP(快)。"))
+            inputs.view("info", types.Notice(label="偵測框已有 DINO 嵌入 → 直接算 UMAP(物件級,每個偵測框一個點)。"))
         else:
             try:
                 from vix.embedding.dinov2_torch import device_report
@@ -867,26 +868,30 @@ class ComputeVisualization(foo.Operator):
             except Exception:  # noqa: BLE001
                 dev = "將自動偵測加速硬體(CUDA/MPS/CPU)"
             inputs.view("warn", types.Notice(
-                label=f"偵測框尚無 DINO 嵌入,會先算一次 DINOv2。{dev}。完成後到 Embeddings 面板看 2D 散點圖。"))
-        return types.Property(inputs, view=types.View(label="建立嵌入視覺化(DINO / UMAP)"))
+                label=f"偵測框尚無 DINO 嵌入,會先算一次 DINOv2。{dev}。完成後到 Embeddings 面板看 2D 散點圖(每點=一個偵測框)。"))
+        return types.Property(inputs, view=types.View(label="建立嵌入視覺化(DINO / UMAP,物件級)"))
 
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
         try:
-            if not ad.has_embeddings():     # one-time DINOv2 crop embeddings (per-sample mean is what UMAP uses)
+            # object-level UMAP is all-or-nothing per sample (a box with no embedding drops its whole
+            # sample), so ensure FULL coverage. has_full_embeddings is newer than has_embeddings; a
+            # long-running App caches the OLD adapter -> fall back instead of AttributeError-crashing.
+            coverage_ok = getattr(ad, "has_full_embeddings", None) or ad.has_embeddings
+            if not coverage_ok():
                 ad.compute_embeddings(cfg.dinov2_model_key)
-            brain_key = ad.compute_visualization()   # UMAP -> vix_umap (no zoo model; uses our vectors)
+            brain_key = ad.compute_visualization()   # object-level UMAP -> vix_umap (patches_field, our vectors)
         except Exception as exc:  # noqa: BLE001 - missing deps / no detections -> friendly message
             return {"error": f"建立失敗:{exc}"}
         try:
             ctx.ops.open_panel("Embeddings")  # surface the native OSS Embeddings panel; harmless if unsupported
-            ctx.ops.notify("嵌入視覺化完成。開『Embeddings』面板、在 brain key 選『vix_umap』即可看 2D 散點圖、"
-                           "框選(lasso)一群相似的物件。", variant="success")
+            ctx.ops.notify("嵌入視覺化完成(物件級:每個偵測框一個點)。開『Embeddings』面板、brain key 選"
+                           "『vix_umap』即可看 2D 散點圖、框選(lasso)一群長得像的物件框。", variant="success")
         except Exception:  # noqa: BLE001
             pass
         return {"brain_key": brain_key,
-                "hint": "用法:開 Embeddings 面板 → brain key 選 vix_umap → 框選(lasso)群集 → 只看選取。"
-                        "全離線、用你的 DINO 向量,不需 Enterprise。"}
+                "hint": "用法:開 Embeddings 面板 → brain key 選 vix_umap → 每點=一個偵測框(非整張圖)→ "
+                        "框選(lasso)一群物件框 → 只看選取。全離線、用你的 DINO 向量,不需 Enterprise。"}
 
     def resolve_output(self, ctx):
         out = types.Object()

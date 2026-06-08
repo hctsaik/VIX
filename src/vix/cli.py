@@ -185,7 +185,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ser.add_argument("--iou", type=float, default=0.5)
     sub.add_parser("embed", help="DINOv2 embeddings + kNN index")
     sub.add_parser("similarity", help="object-box (patch) similarity index over DINOv2 crops — App 原生『放大鏡』排相似(needs fiftyone)")
-    sub.add_parser("visualize", help="UMAP 2D embedding visualization over DINOv2 — App 原生 Embeddings 面板散點圖(needs fiftyone)")
+    sub.add_parser("visualize", help="UMAP 2D embedding visualization over DINOv2 — 物件級(每個偵測框一個點),App 原生 Embeddings 面板散點圖(needs fiftyone)")
     sub.add_parser("calibrate", help="compute per-class percentile thresholds")
     sub.add_parser("route", help="route candidates to pass/review")
 
@@ -565,8 +565,8 @@ def _main(argv: list[str] | None = None) -> int:
                     from .embedding.dinov2_torch import device_report
                     print(device_report())
                 adapter.compute_embeddings(cfg.dinov2_model_key)
-            bk = adapter.compute_visualization()     # UMAP -> vix_umap
-            print(f"嵌入視覺化完成:{bk}。在 App 開 Embeddings 面板、brain key 選 vix_umap → 看 2D 散點圖、可框選群集。")
+            bk = adapter.compute_visualization()     # object-level UMAP -> vix_umap (patches_field)
+            print(f"嵌入視覺化完成:{bk}(物件級,每個偵測框一個點)。在 App 開 Embeddings 面板、brain key 選 vix_umap → 看 2D 散點圖、框選物件群集。")
 
     elif args.cmd == "calibrate":
         pol = pipeline.calibrate(adapter, cfg)
