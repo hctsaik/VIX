@@ -77,15 +77,18 @@ def _wait_ready(port: int, timeout: int = 90) -> bool:
 
 
 def cmd_restart(args) -> int:
-    """Kill the App server on the port, relaunch the named dataset on it, DETACHED (survives this exit)."""
-    killed = _kill_port(args.port)
-    print(f"killed {killed or 'nothing'} on :{args.port}")
-    launcher = (
-        "import fiftyone as fo;"
-        f"ds=fo.load_dataset({args.dataset!r});"
-        f"s=fo.launch_app(ds, port={args.port}, remote=True);"
-        "s.wait()"
-    )
+    """Kill EVERY App server in the port range and relaunch one, DETACHED (survives this exit).
+    No dataset needed — datasets live in Mongo and the restart never touches them; you pick one in the
+    App (top-left dataset name). Pass --dataset only if you want it reopened to a specific one."""
+    killed = []
+    for p in range(args.port, args.port + args.scan):
+        killed += _kill_port(p)
+    print(f"killed {killed or 'nothing'} (swept :{args.port}-:{args.port + args.scan - 1})")
+    if args.dataset:
+        launcher = (f"import fiftyone as fo; ds=fo.load_dataset({args.dataset!r});"
+                    f" s=fo.launch_app(ds, port={args.port}, remote=True); s.wait()")
+    else:
+        launcher = f"import fiftyone as fo; s=fo.launch_app(port={args.port}, remote=True); s.wait()"
     flags = 0
     if os.name == "nt":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008  # DETACHED_PROCESS
@@ -93,7 +96,8 @@ def cmd_restart(args) -> int:
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True)
     ok = _wait_ready(args.port)
-    print(f"restarted dataset={args.dataset!r} on http://localhost:{args.port}  ready={ok}")
+    where = f"dataset={args.dataset!r}" if args.dataset else "no dataset bound (pick one in the App)"
+    print(f"restarted, {where}, on http://localhost:{args.port}  ready={ok}")
     return 0 if ok else 1
 
 
@@ -154,9 +158,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="VIX App run-driver (restart / screenshot / e2e)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("restart", help="kill the App server on the port and relaunch it (clears stale modules)")
-    r.add_argument("--dataset", default="vix")
+    r = sub.add_parser("restart", help="kill ALL App servers in the port range and relaunch (clears stale modules)")
+    r.add_argument("--dataset", default=None, help="optional: reopen a specific dataset (else pick it in the App)")
     r.add_argument("--port", type=int, default=5151)
+    r.add_argument("--scan", type=int, default=10, help="ports from --port to sweep for stray App servers")
 
     s = sub.add_parser("screenshot", help="launch the App + Playwright screenshot to disk (GUI proof)")
     s.add_argument("--out", default=str(REPO / "_artifacts" / "vix_app.png"))

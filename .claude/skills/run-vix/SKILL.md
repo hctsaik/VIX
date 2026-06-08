@@ -38,21 +38,22 @@ The venv is already provisioned. Confirm the Tier-2 stack is importable:
 ### Restart the App server (do this after every non-plugin edit)
 
 ```bash
-.venv311/Scripts/python.exe .claude/skills/run-vix/driver.py restart --dataset vix --port 5151
+.venv311/Scripts/python.exe .claude/skills/run-vix/driver.py restart
 ```
 
-Defaults are `--dataset vix --port 5151` (what `vix app` opens), so bare `restart` works too.
-It kills whatever LISTENs on the port and relaunches that dataset **detached** (survives the
-driver exiting), then waits until the App answers. Verified output (relaunch over a running
-server on a throwaway port):
+No dataset needed — datasets live in Mongo and the restart never touches them; the App comes up and
+you pick a dataset in the UI (top-left dataset name). `restart` sweeps the FiftyOne port range
+(`:5151`–`:5160` by default), kills **every** App server it finds, and relaunches one **detached**
+(survives the driver exiting), then waits until it answers. Verified:
 
 ```
-killed [28600] on :5197
-restarted dataset='vix_verify' on http://localhost:5197  ready=True
+killed nothing (swept :5193-:5195)
+restarted, no dataset bound (pick one in the App), on http://localhost:5193  ready=True
 ```
 
-> Verified the kill+relaunch cycle on `--port 5197` (a throwaway) to avoid disturbing a live
-> `:5151`. Point `--dataset` at whatever the user is viewing (e.g. their loaded dataset name).
+(and the kill side, relaunching over a running server: `killed [28600]` → `ready=True`.) Options:
+`--port` (base port), `--scan` (how many ports to sweep), `--dataset NAME` (optional: reopen a
+specific dataset instead of letting you pick).
 
 ### Screenshot the live App (GUI proof / eyeball a change)
 
