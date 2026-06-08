@@ -323,6 +323,7 @@ vix app                               # 開 FiftyOne + @vix/review 外掛</code>
 <figure><img src="../walkthrough/03_generate-report-pick-eval.png" alt="產生報告 operator"></figure></li>
 <li>在面板裡直接看弱點報告(mAP、per-class、混淆)。
 <figure><img src="../walkthrough/04_weakness-report-panel.png" alt="弱點報告面板"></figure></li>
+<li>想<b>互動</b>地看評估?分頁列 <b>+</b> → <b>VIX: 模型評估(可點混淆矩陣)</b> 面板:<b>點混淆矩陣的格子</b>,格狀檢視就<b>跳到那批「真實→預測」誤分類的影像</b>;另有 per-class P/R/F1 表(弱者在前)。這是 FiftyOne Enterprise「Model Evaluation」面板的離線替代,沿用 <code>eval-ingest</code> 現成數字(P/R/F1/AP 為實測,非 PROXY)。對角線=正確偵測(TP),非對角線只含「被誤判成他類」;漏框/定位誤差看 P/R/F1 與弱點報告。</li>
 <li>用 <code>flag_label_issues</code> / <code>audit_label_errors</code> 標出疑似錯標,形成工作清單。
 <figure><img src="../walkthrough/06_inaccurate-label-worklist.png" alt="不準標籤工作清單"></figure></li>
 <li>點一張被標記的樣本,看到那個有問題的框。
