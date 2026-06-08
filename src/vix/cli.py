@@ -185,7 +185,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ser.add_argument("--iou", type=float, default=0.5)
     sub.add_parser("embed", help="DINOv2 embeddings + kNN index")
     sub.add_parser("similarity", help="object-box (patch) similarity index over DINOv2 crops — App 原生『放大鏡』排相似(needs fiftyone)")
-    sub.add_parser("visualize", help="UMAP 2D embedding visualization over DINOv2 — 物件級(每個偵測框一個點),App 原生 Embeddings 面板散點圖(needs fiftyone)")
+    svz = sub.add_parser("visualize", help="UMAP 2D embedding visualization over DINOv2 — 物件級(每個偵測框一個點)、transform-stable(版面跨次一致),App 原生 Embeddings 面板散點圖(needs fiftyone)")
+    svz.add_argument("--refit", action="store_true", help="重新擬合 UMAP(重新錨定版面);預設沿用凍結的 reducer 以維持一致")
     sub.add_parser("calibrate", help="compute per-class percentile thresholds")
     sub.add_parser("route", help="route candidates to pass/review")
 
@@ -548,7 +549,10 @@ def _main(argv: list[str] | None = None) -> int:
         if not hasattr(adapter, "build_patch_similarity"):
             print("需要 FiftyOne adapter(此功能用 fiftyone.brain;memory adapter 不支援)")
         else:
-            if not adapter.has_embeddings():        # one-time DINOv2 crop embeddings
+            # FULL coverage: the patch index/viz are all-or-nothing per sample, so a partially-embedded
+            # dataset must be (re)embedded, not skipped (has_embeddings()=any-box would let it through).
+            cover = getattr(adapter, "has_full_embeddings", None) or adapter.has_embeddings
+            if not cover():
                 if cfg.embedding_backend != "pixel_fallback":
                     from .embedding.dinov2_torch import device_report
                     print(device_report())          # 先偵測 GPU/MPS/CPU 再開始
@@ -560,13 +564,15 @@ def _main(argv: list[str] | None = None) -> int:
         if not hasattr(adapter, "compute_visualization"):
             print("需要 FiftyOne adapter(此功能用 fiftyone.brain;memory adapter 不支援)")
         else:
-            if not adapter.has_embeddings():
+            cover = getattr(adapter, "has_full_embeddings", None) or adapter.has_embeddings
+            if not cover():     # full coverage: compute_visualization RAISES on a partially-embedded set
                 if cfg.embedding_backend != "pixel_fallback":
                     from .embedding.dinov2_torch import device_report
                     print(device_report())
                 adapter.compute_embeddings(cfg.dinov2_model_key)
-            bk = adapter.compute_visualization()     # object-level UMAP -> vix_umap (patches_field)
-            print(f"嵌入視覺化完成:{bk}(物件級,每個偵測框一個點)。在 App 開 Embeddings 面板、brain key 選 vix_umap → 看 2D 散點圖、框選物件群集。")
+            bk = adapter.compute_visualization(refit=args.refit)  # object-level + transform-stable -> vix_umap
+            mode = "重新錨定版面" if args.refit else "沿用凍結 reducer(版面一致)"
+            print(f"嵌入視覺化完成:{bk}(物件級,每個偵測框一個點;{mode})。在 App 開 Embeddings 面板、brain key 選 vix_umap → 看 2D 散點圖、框選物件群集。")
 
     elif args.cmd == "calibrate":
         pol = pipeline.calibrate(adapter, cfg)

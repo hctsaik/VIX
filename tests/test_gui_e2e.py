@@ -260,6 +260,63 @@ def test_gui_compute_visualization_builds_umap(live):
     assert len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)
 
 
+def test_compute_visualization_transform_stable(live):
+    """Transform-stable UMAP (consistency): reducer FIT once + persisted, then transform()-reused, so the
+    2D layout is identical on rebuild AND — the real promise — adding new boxes does NOT move the existing
+    ones. A changed encoder fingerprint re-anchors the frozen space."""
+    import pickle
+    import numpy as np
+    ad, ds = live.ad, live.ds
+    _pts = lambda d: np.asarray(d.load_brain_results("vix_umap").points, float)  # flat (N,2)
+
+    rp = live.cfg.workspace / f"vix_umap_reducer.{ad.dataset_name}.pkl"           # dataset-scoped pickle
+    ad.compute_visualization(); ds.reload()                       # run 1: FIT + persist reducer
+    assert rp.exists()
+    saved1 = pickle.loads(rp.read_bytes()); mtime1 = rp.stat().st_mtime_ns
+    pts1 = _pts(ds)
+    ad.compute_visualization(); ds.reload()                       # run 2: TRANSFORM (reuse frozen reducer)
+    assert rp.stat().st_mtime_ns == mtime1                        # reducer NOT re-fit -> reused
+    assert np.allclose(pts1, _pts(ds))                            # identical layout on rebuild
+
+    # THE REAL PROMISE: add a NEW box -> existing boxes keep their coordinates (projected into frozen space)
+    n0 = pts1.shape[0]
+    ref = list(ds.first()["yolo_detections"].detections[0]["dino_embedding"])     # borrow a real embedding
+    s = fo.Sample(filepath="/tmp/vix_umap_newbox.png"); s["vix_hash"] = "umap_newbox"
+    s["yolo_detections"] = fo.Detections(detections=[fo.Detection(
+        label="vert", bounding_box=[0.1, 0.1, 0.2, 0.2], confidence=0.9, dino_embedding=ref)])
+    ds.add_sample(s); ds.reload()
+    ad.compute_visualization(); ds.reload()
+    assert rp.stat().st_mtime_ns == mtime1                        # still frozen — no re-fit on data add
+    after = _pts(ds)
+    assert after.shape[0] == n0 + 1                               # the new box was placed
+    assert np.allclose(after[:n0], pts1)                          # ORIGINAL boxes UNCHANGED -> stable
+
+    # a changed encoder fingerprint invalidates the frozen reducer -> re-fit, new fp persisted
+    d = ad._dataset(); d.info["vix_encoder_fp"] = "ENCODER_CHANGED"; d.save()
+    ad.compute_visualization(); ds.reload()
+    assert saved1["fp"] != "ENCODER_CHANGED" and pickle.loads(rp.read_bytes())["fp"] == "ENCODER_CHANGED"
+
+
+def test_compute_visualization_partial_embeddings_raises(live):
+    """compute_visualization requires FULL per-box coverage (else points misalign with brain's labels);
+    a partially-embedded set raises a friendly message (the operator/CLI re-embed first to avoid it)."""
+    ad, ds = live.ad, live.ds
+    s = ds.first()
+    s["yolo_detections"].detections[0]["dino_embedding"] = None   # drop one box's embedding
+    s.save(); ds.reload()
+    with pytest.raises(ValueError, match="部分"):
+        ad.compute_visualization()
+
+
+def test_compute_visualization_refit_refits(live):
+    """refit=True forces a re-fit (re-anchor) even when fp/num_dims are unchanged."""
+    ad = live.ad
+    rp = live.cfg.workspace / f"vix_umap_reducer.{ad.dataset_name}.pkl"
+    ad.compute_visualization(); m1 = rp.stat().st_mtime_ns
+    ad.compute_visualization(); assert rp.stat().st_mtime_ns == m1   # reuse -> unchanged
+    ad.compute_visualization(refit=True); assert rp.stat().st_mtime_ns != m1  # forced re-fit
+
+
 def test_adapter_patch_similarity_and_has_embeddings(live):
     """Adapter seam: build_patch_similarity returns the patch brain key; has_embeddings detects the
     per-detection DINO vectors (so the operator can skip the expensive recompute)."""

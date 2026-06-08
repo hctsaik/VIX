@@ -242,7 +242,7 @@ def test_b12z_compute_visualization_creates_umap(app):
     """B12z: compute_visualization builds the vix_umap UMAP run (Embeddings panel). Runs AFTER the other
     operator-browser tests because its open_panel('Embeddings') side-effect disrupts a following ` invoke;
     the next test (b13 queue) opens its panel via the spaces API, which is unaffected."""
-    _run_operator(app, "compute_visualization", post_wait=8000)
+    _run_operator(app, "compute_visualization", post_wait=30000)
     app.ds.reload()
     assert "vix_umap" in app.ds.list_brain_runs()
     # object-level: the run carries patches_field so the panel plots one point per box, not per image
