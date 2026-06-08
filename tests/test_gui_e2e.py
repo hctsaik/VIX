@@ -229,6 +229,18 @@ def test_gui_find_similar_self_heals_stale_index(live):
     assert any(c[0] == "notify" and c[2].get("variant") == "success" for c in ctx.ops.calls)
 
 
+def test_build_similarity_survives_stale_adapter(live, monkeypatch):
+    """A long-running App reloads the plugin but CACHES `import vix.adapters...`; if that cached adapter
+    predates has_full_embeddings, BuildSimilarity must FALL BACK to has_embeddings — not crash with
+    \"'FiftyOneAdapter' object has no attribute 'has_full_embeddings'\". Simulate the stale adapter by
+    removing the new method. (Fresh-process tests never reproduce plugin-new/adapter-old skew — this does.)"""
+    monkeypatch.delattr(PLUGIN.FiftyOneAdapter, "has_full_embeddings", raising=False)
+    op = PLUGIN.BuildSimilarity()
+    out = op.execute(_ctx(live.ds))
+    assert not out.get("error"), out               # fell back, did not AttributeError-crash
+    assert out.get("brain_key") == "vix_patch_sim"
+
+
 def test_gui_compute_visualization_builds_umap(live):
     """Embeddings-viz (OSS replacement for Enterprise 'Create Embeddings'): ComputeVisualization builds
     a UMAP brain run (vix_umap) from the DINO vectors so the native Embeddings panel can plot it.

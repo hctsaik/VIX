@@ -755,8 +755,13 @@ class BuildSimilarity(foo.Operator):
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
         try:
-            if not ad.has_full_embeddings():   # embed when coverage is PARTIAL too (a single un-embedded box
-                ad.compute_embeddings(cfg.dinov2_model_key)  # would otherwise drop its whole sample from the index)
+            # Prefer has_full_embeddings (embed on PARTIAL coverage too, else the all-or-nothing patch index
+            # drops that sample). But a LONG-RUNNING App caches `import vix.adapters...` — FiftyOne reloads
+            # the plugin yet keeps the OLD adapter module — so this method may be absent until the App
+            # restarts. Fall back to has_embeddings instead of AttributeError-crashing on a stale adapter.
+            coverage_ok = getattr(ad, "has_full_embeddings", None) or ad.has_embeddings
+            if not coverage_ok():
+                ad.compute_embeddings(cfg.dinov2_model_key)
             brain_key = ad.build_patch_similarity()   # sklearn exact-NN over the crop embeddings
         except Exception as exc:  # noqa: BLE001 - missing deps / no detections -> friendly message
             return {"error": f"建立失敗:{exc}"}
