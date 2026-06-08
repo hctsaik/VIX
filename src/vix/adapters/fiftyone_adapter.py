@@ -222,6 +222,22 @@ class FiftyOneAdapter(DatasetAdapter):
                         return True
         return False
 
+    def has_full_embeddings(self, embeddings_field: str = _EMB_FIELD) -> bool:
+        """True iff EVERY detection carries a crop embedding. build_patch_similarity is all-or-nothing per
+        sample (a sample with ANY un-embedded box is dropped from the index, so its boxes become
+        un-queryable -> FiftyOne 'Query IDs ... do not exist in this index'). So the similarity build must
+        embed when coverage is PARTIAL, not only when it is zero — otherwise newly-added boxes silently
+        fall out of the index and find-similar fails on them."""
+        ds = self._dataset()
+        for s in ds.iter_samples():
+            field = s[_DET_FIELD]
+            if field is None:
+                continue
+            for det in field.detections:
+                if not (det.has_field(embeddings_field) and det.get_field(embeddings_field) is not None):
+                    return False
+        return True
+
     def samples(self) -> Iterable[SampleRow]:
         ds = self._dataset()
         for s in ds.iter_samples():

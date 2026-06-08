@@ -169,6 +169,31 @@ def test_b8_find_similar_sets_similarity_view(app):
     app.session.view = None  # restore for later tests
 
 
+def test_b8b_find_similar_with_no_selection_toasts(app):
+    """B8b: the real '按了沒反應' bug — clicking 找相似 with NOTHING selected used to silently return an
+    error (prompt=False shows no output modal), so the user saw nothing. Now it must surface a visible
+    notification toast in the live DOM. Proves the failure path gives feedback, not just the happy path."""
+    _dismiss_dialogs(app.page)
+    app.session.view = None
+    app.session.selected = []                      # the key: NO selection
+    app.session.spaces = app.fo.Space(children=[app.fo.Panel(type="Samples", pinned=True)])
+    app.page.wait_for_timeout(2500)
+    app.page.wait_for_selector("img[src*='similar.svg']", state="visible", timeout=20000)
+    try:
+        app.page.locator("img[src*='similar.svg']").first.click(no_wait_after=True, timeout=10000, force=True)
+    except Exception:
+        pass
+    # a notification toast carrying the actionable message must appear (notistack/snackbar in the DOM)
+    toast = app.page.get_by_text(re.compile("請先在格狀檢視選|請先.*選一張|沒有偵測框"))
+    try:
+        toast.first.wait_for(state="visible", timeout=8000)
+        shown = True
+    except Exception:
+        shown = False
+    app.page.screenshot(path=str(app.shots / "b8b_no_selection_toast.png"))
+    assert shown, "clicking 找相似 with no selection produced NO visible toast (silent = 按了沒反應)"
+
+
 def test_b10_dismiss_false_alarm_in_browser(app):
     """B10: dismiss_false_alarm executed in the browser tags rev2 'rejected' + writes one false_alarm ledger event."""
     rev = app.ds.match({"vix_hash": "rev2"}).first()

@@ -101,8 +101,10 @@ class OpenReviewWorkstation(foo.Operator):
                     ctx.ops.open_panel(p); opened = True
                 except Exception:  # noqa: BLE001
                     pass
-        if not opened:  # don't claim success with nothing opened
-            return {"error": "無法開啟面板;請用分頁列的 + 手動加入『VIX: 覆核佇列』/『VIX: 弱點報告』。"}
+        if not opened:  # don't claim success with nothing opened — prompt=False, so toast or it's silent
+            msg = "無法開啟面板;請用分頁列的 + 手動加入『VIX: 覆核佇列』/『VIX: 弱點報告』。"
+            ctx.ops.notify(msg, variant="error")
+            return {"error": msg}
         return {"hint": "已開啟『VIX: 覆核佇列』與『VIX: 弱點/一致性報告』面板。"}
 
     def resolve_output(self, ctx):
@@ -140,10 +142,18 @@ class ConfirmGolden(foo.Operator):
         label = (ctx.params.get("label") or "").strip() or None  # ignore blank/whitespace-only relabel
         import unicodedata
         if label and (len(label) > 100 or any(unicodedata.category(c).startswith("C") for c in label)):
+            try:  # prompt=True but this class has NO resolve_output -> a bare return is silent; toast it
+                ctx.ops.notify("更正類別名稱不合法(過長或含控制/不可見字元)", variant="error")
+            except Exception:  # noqa: BLE001
+                pass
             return {"error": "更正類別名稱不合法(過長或含控制/不可見字元)"}  # bound garbage relabel input
         hashes = _selected_hashes(ctx)
         n_sel = len(ctx.selected or [])
         if not hashes:  # parity with explain_sample: a friendly message, never a phantom 0-write
+            try:
+                ctx.ops.notify("請先在格狀檢視選取影像", variant="warning")
+            except Exception:  # noqa: BLE001
+                pass
             return {"error": "請先在格狀檢視選取影像"}
         ok, failed, first_err = 0, 0, None
         for h in hashes:  # aggregate per-item outcomes so one bad hash can't abort the batch silently
@@ -185,7 +195,11 @@ class DismissFalseAlarm(foo.Operator):
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
         hashes = _selected_hashes(ctx)
-        if not hashes:
+        if not hashes:  # prompt=True but no resolve_output -> toast or it's silent ("按了沒反應")
+            try:
+                ctx.ops.notify("請先在格狀檢視選取影像", variant="warning")
+            except Exception:  # noqa: BLE001
+                pass
             return {"error": "請先在格狀檢視選取影像"}
         n_sel = len(ctx.selected or [])
         ok, failed, first_err = 0, 0, None
@@ -335,10 +349,15 @@ class VixReportPanel(foo.Panel):
         the App's sample modal OVER whatever you're looking at — set_view only filtered the grid behind
         this panel (you're on the panel tab, so you'd see nothing change)."""
         idx = ctx.params.get("row")
-        if isinstance(idx, int) and 0 <= idx < len(rows):
-            sid = _sample_id_for_hash(ctx, rows[idx].get("hash"))
-            if sid:
-                ctx.ops.open_sample(id=sid)
+        sid = (_sample_id_for_hash(ctx, rows[idx].get("hash"))
+               if isinstance(idx, int) and 0 <= idx < len(rows) else None)
+        if sid:
+            ctx.ops.open_sample(id=sid)
+        else:  # stale/vanished/out-of-range row -> tell the user (parity with the queue panel's on_inspect)
+            try:
+                ctx.ops.notify("找不到該圖(可能已被刪除或變更);請按「產生 / 重新整理報告」。", variant="warning")
+            except Exception:  # noqa: BLE001
+                pass
 
     def on_inspect_cw(self, ctx):
         self._jump(ctx, ctx.panel.state.cw or [])
@@ -439,7 +458,11 @@ class VixQueuePanel(foo.Panel):
 
     def _resolve(self, ctx, decision):
         h = self._row_hash(ctx)
-        if not h:
+        if not h:  # couldn't resolve the clicked row -> tell the user instead of a silent no-op
+            try:
+                ctx.ops.notify("找不到此列對應的項目;請按「重新整理佇列」。", variant="warning")
+            except Exception:  # noqa: BLE001
+                pass
             return
         cfg, ad = Config(), _adapter(ctx)
         try:  # a stale/unknown row (resolve_review fail-closes via _require_known) must not crash the panel
@@ -732,8 +755,8 @@ class BuildSimilarity(foo.Operator):
     def execute(self, ctx):
         cfg, ad = Config(), _adapter(ctx)
         try:
-            if not ad.has_embeddings():        # one-time: embed every box crop with DINOv2 (real, offline)
-                ad.compute_embeddings(cfg.dinov2_model_key)
+            if not ad.has_full_embeddings():   # embed when coverage is PARTIAL too (a single un-embedded box
+                ad.compute_embeddings(cfg.dinov2_model_key)  # would otherwise drop its whole sample from the index)
             brain_key = ad.build_patch_similarity()   # sklearn exact-NN over the crop embeddings
         except Exception as exc:  # noqa: BLE001 - missing deps / no detections -> friendly message
             return {"error": f"建立失敗:{exc}"}
@@ -859,6 +882,9 @@ class FindSimilar(foo.Operator):
         return None, "請先在格狀檢視選一張有框的影像(或在展開圖選一個 label)"
 
     def execute(self, ctx):
+        # prompt=False -> this runs on click with NO modal, so resolve_output is never shown; a bare
+        # `return {"error": ...}` is INVISIBLE (the "按了沒反應" bug). Every path must ctx.ops.notify so the
+        # user always gets feedback: missing index, nothing selected, failure, AND success all toast.
         ds = ctx.dataset
         k = int(ctx.params.get("k") or 50)
         try:
@@ -866,15 +892,37 @@ class FindSimilar(foo.Operator):
         except Exception:  # noqa: BLE001
             has_index = False
         if not has_index:
-            return {"error": "尚未建立索引 — 請先點工具列的『VIX: 建立相似搜尋索引』。"}
+            msg = "尚未建立相似索引 — 請先點工具列的『VIX: 建立相似搜尋索引』,完成後再按這顆。"
+            ctx.ops.notify(msg, variant="error")
+            return {"error": msg}
         qid, why = self._query_label_id(ctx)
         if not qid:
+            ctx.ops.notify(why, variant="warning")   # e.g. 沒選圖 / 選的圖沒框 — tell the user what to do
             return {"error": why}
+        qid = str(qid)  # FiftyOne ids are plain str; never let a numpy/str wrapper miss the index lookup
         try:
             view = ds.to_patches("yolo_detections").sort_by_similarity(qid, k=k, brain_key="vix_patch_sim")
-            ctx.ops.set_view(view=view)  # drive the App to the DINO-sorted object patches (no Enterprise)
-        except Exception as exc:  # noqa: BLE001 - stale id / index mismatch -> friendly message
-            return {"error": f"找相似失敗:{exc}"}
+        except Exception as exc:  # noqa: BLE001
+            # "Query IDs [...] do not exist in this index" is NOT "no similar found" — the ranking never
+            # ran because the selected box isn't in vix_patch_sim. Usual cause: a STALE index (dataset
+            # reloaded / boxes added since it was built). Self-heal: re-index the EXISTING embeddings
+            # (cheap sklearn NN, NO re-embed) and retry once. If it STILL isn't there, that box genuinely
+            # has no DINO embedding (e.g. added after embed) -> tell the user how to fix, don't echo raw.
+            if "do not exist in this index" not in str(exc):
+                msg = f"找相似失敗:{exc}"
+                ctx.ops.notify(msg, variant="error")
+                return {"error": msg}
+            try:
+                _adapter(ctx).build_patch_similarity()   # rebuild over current detections (uses existing vectors)
+                view = ds.to_patches("yolo_detections").sort_by_similarity(qid, k=k, brain_key="vix_patch_sim")
+            except Exception:  # noqa: BLE001 - the box really isn't embedded -> actionable, not cryptic
+                msg = ("選取的物件不在相似索引中(自動重建後仍找不到):這張圖的框可能還沒算 DINO 嵌入。"
+                       "請先按工具列『VIX: 建立相似搜尋索引』(會自動補算),或改選另一張框較完整的圖。")
+                ctx.ops.notify(msg, variant="error")
+                return {"error": msg}
+        ctx.ops.set_view(view=view)  # drive the App to the DINO-sorted object patches (no Enterprise)
+        ctx.ops.notify(f"已切到『用你的 DINO 排序的相似物件』:最像的 {len(view)} 個物件排在前面。"
+                       "要還原:清掉檢視列(view bar)的相似度階段。", variant="success")
         return {"shown": len(view),
                 "hint": "已切到『用你的 DINO 排序的相似物件』檢視(最像的在前)。要還原:清掉檢視列的階段。"}
 

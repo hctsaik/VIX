@@ -182,16 +182,51 @@ def test_gui_find_similar_uses_dino_index(live):
     assert len(setviews) == 1
     view = setviews[0][2].get("view")
     assert any("Similarity" in st.__class__.__name__ for st in view._stages)  # sorted by similarity
+    # success must TOAST too (prompt=False shows no output form) — else a working find still looks "dead"
+    assert any(c[0] == "notify" and c[2].get("variant") == "success" for c in ctx.ops.calls)
     assert not _reviews(live.cfg) and _chain_ok(live.cfg)
 
 
 def test_gui_find_similar_needs_index_and_selection(live):
-    """Find-similar fails friendly (no crash) when there's no index, or nothing selected."""
+    """Regression guard for '按了沒反應': because find_similar is prompt=False (no output modal), a bare
+    `return {"error": ...}` is INVISIBLE — every failure path MUST ctx.ops.notify or the user sees nothing.
+    Assert the notify fires (not just that an error string is returned)."""
     op = PLUGIN.FindSimilar()
-    assert "建立相似搜尋索引" in (op.execute(_ctx(live.ds, selected=[live.ds.first().id])).get("error") or "")
+    ctx1 = _ctx(live.ds, selected=[live.ds.first().id])          # index not built yet
+    assert "建立相似" in (op.execute(ctx1).get("error") or "")
+    assert any(c[0] == "notify" for c in ctx1.ops.calls), "no-index path was SILENT (no notify) -> 按了沒反應"
     live.ad.build_patch_similarity(); live.ds.reload()
-    assert (op.execute(_ctx(live.ds, selected=[])).get("error") or "")  # no selection -> friendly error
+    ctx2 = _ctx(live.ds, selected=[])                            # nothing selected
+    assert (op.execute(ctx2).get("error") or "")
+    assert any(c[0] == "notify" for c in ctx2.ops.calls), "no-selection path was SILENT (no notify) -> 按了沒反應"
     assert _chain_ok(live.cfg)
+
+
+def test_gui_find_similar_self_heals_stale_index(live):
+    """User-reported error: clicking 找相似 raised 'Query IDs [...] do not exist in this index' — the
+    selected box wasn't in the (stale) index, NOT a 'no similar found'. find_similar must SELF-HEAL:
+    rebuild the index from existing embeddings and still return a similarity view, never the raw error."""
+    live.ad.build_patch_similarity()                          # index over the CURRENT detections only
+    live.ds.reload()
+    ref = None                                                # borrow a real box embedding (right field+dim)
+    for smp in live.ds:
+        d = smp["yolo_detections"].detections if smp["yolo_detections"] else []
+        if d and d[0].has_field("dino_embedding") and d[0]["dino_embedding"] is not None:
+            ref = list(d[0]["dino_embedding"]); break
+    assert ref is not None
+    s = fo.Sample(filepath="/tmp/vix_stale_box.png")          # a NEW box the stale index has never seen
+    s["vix_hash"] = "stalebox"
+    s["yolo_detections"] = fo.Detections(detections=[
+        fo.Detection(label="stale", bounding_box=[0.1, 0.1, 0.2, 0.2], confidence=0.9, dino_embedding=ref)])
+    live.ds.add_sample(s)
+    live.ds.reload()
+    op = PLUGIN.FindSimilar()
+    ctx = _ctx(live.ds, selected=[s.id])                      # its id is NOT in the index -> would error
+    out = op.execute(ctx)
+    assert not out.get("error"), out                          # self-healed, not the cryptic index error
+    assert out.get("shown", 0) >= 1
+    assert any(c[0] == "set_view" for c in ctx.ops.calls)
+    assert any(c[0] == "notify" and c[2].get("variant") == "success" for c in ctx.ops.calls)
 
 
 def test_gui_compute_visualization_builds_umap(live):
@@ -400,11 +435,14 @@ def test_s4_empty_queue_has_no_error_block(live):
 
 
 def test_s5_confirm_no_selection_no_write(live):
-    """S5: confirm_golden with nothing selected -> friendly error, ZERO writes, chain valid."""
+    """S5: confirm_golden with nothing selected -> friendly error, ZERO writes, chain valid.
+    ConfirmGolden has no resolve_output, so the error is INVISIBLE unless it also notifies (按了沒反應)."""
     op = PLUGIN.ConfirmGolden()
     before = len(_reviews(live.cfg))
-    out = op.execute(_ctx(live.ds, selected=[]))
+    ctx = _ctx(live.ds, selected=[])
+    out = op.execute(ctx)
     assert "error" in out and len(_reviews(live.cfg)) == before
+    assert any(c[0] == "notify" for c in ctx.ops.calls), "no-selection was SILENT (no notify)"
     assert _chain_ok(live.cfg) and not _log(live.cfg).is_truncated()
 
 
@@ -570,11 +608,31 @@ def test_r2_dismiss_operator_happy(live):
 
 
 def test_r2_dismiss_operator_no_selection(live):
-    """R2-26: dismiss operator with nothing selected -> friendly error, zero writes, chain valid."""
+    """R2-26: dismiss operator with nothing selected -> friendly error, zero writes, chain valid.
+    DismissFalseAlarm has no resolve_output -> must notify or the user sees nothing (按了沒反應)."""
     op = PLUGIN.DismissFalseAlarm()
     before = len(_reviews(live.cfg))
-    out = op.execute(_ctx(live.ds, selected=[]))
+    ctx = _ctx(live.ds, selected=[])
+    out = op.execute(ctx)
     assert "error" in out and len(_reviews(live.cfg)) == before and _chain_ok(live.cfg)
+    assert any(c[0] == "notify" for c in ctx.ops.calls), "no-selection was SILENT (no notify)"
+
+
+def test_report_panel_jump_miss_toasts():
+    """Regression for 按了沒反應: VixReportPanel '看圖' on a vanished/out-of-range row must toast, not no-op.
+    No live dataset needed — the miss path never touches FiftyOne (idx out of range -> sid None -> notify)."""
+    op = PLUGIN.VixReportPanel()
+    ctx = _ctx(None, params={})              # no 'row' param, empty rows -> miss
+    op._jump(ctx, [])
+    assert any(c[0] == "notify" for c in ctx.ops.calls)
+
+
+def test_queue_panel_resolve_unresolvable_row_toasts():
+    """Regression for 按了沒反應: VixQueuePanel resolve on an unresolvable row toasts, not a silent no-op."""
+    op = PLUGIN.VixQueuePanel()
+    ctx = _ctx(None, params={})              # _row_hash -> None (no row idx, empty rows)
+    op._resolve(ctx, "confirm")
+    assert any(c[0] == "notify" for c in ctx.ops.calls)
 
 
 def test_r2_mixed_batch_skips_non_vix(live):
